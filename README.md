@@ -4,25 +4,31 @@ A state-of-the-art implementation for solving "Where's Waldo?" puzzles using JAX
 
 ![Waldo Detection Example](docs/docs.png)
 
-## 🚀 Key Features
+## 🚀 Project Status (January 2025)
 
-- **Modern Architecture**: Vision Transformer (ViT) backbone with DETR-style detection head
-- **High Performance**: JAX-based implementation with JIT compilation and automatic differentiation
-- **Advanced Training**: 
-  - Focal Loss for handling class imbalance
-  - GIoU Loss for better bounding box regression
-  - Automatic Mixed Precision (AMP) training
-  - Gradient clipping and learning rate scheduling
-- **Rich Augmentations**: Comprehensive data augmentation pipeline including:
-  - Random flipping
-  - Color jittering
-  - Brightness/contrast adjustments
-  - Aspect ratio preservation
-- **MLOps Best Practices**:
-  - Experiment tracking with Weights & Biases
-  - Configuration management with Hydra
-  - Type hints and comprehensive documentation
-  - Modular, maintainable codebase
+### Completed Upgrades
+- Modernized codebase with JAX/Flax implementation
+- Added Vision Transformer (ViT) backbone with DETR-style detection
+- Implemented modern training practices (Focal Loss, GIoU Loss)
+- Added configuration management with Hydra
+- Set up experiment tracking with Weights & Biases
+- Added comprehensive data augmentation pipeline
+
+### Current Setup
+- Virtual environment created and activated
+- Core dependencies installed:
+  - JAX/Flax ecosystem
+  - TensorFlow for data handling
+  - OpenCV and Pillow for image processing
+  - Wandb for experiment tracking
+  - Hydra for configuration
+  - Pandas for data management
+
+### Next Steps Needed
+1. Fix Hydra configuration path issue
+2. Complete model training with the new architecture
+3. Convert existing TensorFlow model weights (optional)
+4. Test and validate the new implementation
 
 ## 🛠️ Installation
 
@@ -31,102 +37,38 @@ A state-of-the-art implementation for solving "Where's Waldo?" puzzles using JAX
 git clone https://github.com/noah-ing/theres-waldo.git
 cd theres-waldo
 
-# Create a virtual environment (optional but recommended)
+# Create and activate virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+venv\Scripts\activate  # On Windows
+source venv/bin/activate  # On Unix/MacOS
 
-# Install the package
-pip install -e ".[dev]"
-```
-
-## 🎯 Quick Start
-
-Find Waldo in an image:
-
-```bash
-find-waldo path/to/image.jpg
-```
-
-Or use the Python API:
-
-```python
-from waldo_finder import WaldoFinder
-
-# Initialize finder with trained model
-finder = WaldoFinder('models/best_model.pkl')
-
-# Find Waldo!
-results = finder.find_waldo('path/to/image.jpg')
-```
-
-## 🏋️ Training
-
-Train your own model with custom configuration:
-
-```bash
-# Set up wandb for experiment tracking
-wandb login
-
-# Train with default configuration
-python -m waldo_finder.train
-
-# Train with custom configuration
-python -m waldo_finder.train data.batch_size=32 training.learning_rate=0.0002
+# Install dependencies
+pip install -e .
 ```
 
 ## 📊 Model Architecture
 
 The model uses a Vision Transformer backbone with modern improvements:
-
 - Pre-norm transformer blocks for stable training
 - Learnable class token for global feature aggregation
 - Sinusoidal positional embeddings
 - DETR-style detection head for accurate localization
 
-```
-Input Image (640x640x3)
-    │
-    ▼
-ViT Backbone (12 layers)
-    │
-    ▼
-Detection Head
-    │
-    ▼
-Bounding Box + Confidence
-```
+## 🏃‍♂️ Running the Model
 
-## 🔧 Advanced Usage
+### Current TensorFlow Model (Legacy)
+The original TensorFlow implementation is temporarily unavailable due to compatibility issues with TensorFlow 2.x.
 
-### Custom Training Configuration
+### New JAX Implementation (In Progress)
+Training pipeline is set up but requires configuration fixes. Stay tuned for updates.
 
-Modify `config/train.yaml` or override via command line:
+## 📈 Dataset
 
-```bash
-python -m waldo_finder.train \
-    model.num_heads=8 \
-    model.dropout_rate=0.2 \
-    training.batch_size=64
-```
-
-### Experiment Tracking
-
-View training progress and compare experiments:
-
-```bash
-# Start training with wandb logging
-python -m waldo_finder.train wandb.project=my-project wandb.name=exp-001
-
-# View results at: https://wandb.ai/username/my-project
-```
-
-## 📈 Performance
-
-The model achieves state-of-the-art performance on Where's Waldo puzzles:
-
-- **Accuracy**: 95%+ detection rate on test set
-- **Speed**: ~100ms inference time on modern GPU
-- **Robustness**: Handles various image sizes and styles
+The project uses a curated dataset of Where's Waldo images with:
+- 30+ annotated images
+- Precise bounding box coordinates
+- Various scene complexities
+- Multiple image resolutions
 
 ## 🤝 Contributing
 
@@ -136,21 +78,35 @@ Contributions are welcome! Please check out our [contribution guidelines](CONTRI
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+---
 
-- Original dataset from [Hey-Waldo](https://github.com/vc1492a/Hey-Waldo)
-- Inspired by advances in vision transformers and object detection
-- Built with JAX ecosystem tools (Flax, Optax)
+## 📋 Next Steps (For New Chat)
 
-## 📚 Citation
+Copy the following prompt for the next chat session:
 
-If you use this code in your research, please cite:
+```
+I have a Where's Waldo detector project that's being upgraded to use JAX/Flax with Vision Transformers. Current status:
 
-```bibtex
-@software{waldo_finder_2025,
-  author = {Noah},
-  title = {There's Waldo: Modern Vision Transformer for Finding Waldo},
-  year = {2025},
-  publisher = {GitHub},
-  url = {https://github.com/noah-ing/theres-waldo}
-}
+1. Directory structure:
+   - src/waldo_finder/: Main package with modernized implementation
+   - config/: Hydra configuration files
+   - images/: Training images
+   - annotations/: Bounding box annotations
+   - trained_model/: Original TensorFlow model (needs updating)
+
+2. Environment:
+   - Virtual environment created and activated
+   - Core dependencies installed (JAX, Flax, TensorFlow, etc.)
+   - Wandb login completed
+
+3. Current Issue:
+   Hydra configuration error: "Primary config directory not found"
+   Error message suggests checking if 'src/config' exists and is readable
+
+4. Next Task:
+   Fix the configuration directory issue and proceed with training the new JAX-based model.
+
+Can you help resolve the configuration issue and guide me through training the model?
+```
+
+This will provide the next chat session with clear context and a focused task to continue the development.
