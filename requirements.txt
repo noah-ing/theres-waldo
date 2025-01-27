@@ -1,0 +1,23 @@
+# Core ML dependencies
+jax>=0.4.20
+jaxlib>=0.4.20
+flax>=0.7.5  # JAX-based neural network library
+optax>=0.1.7  # JAX optimization library
+tensorflow>=2.15.0  # For dataset handling and compatibility
+tensorflow-datasets>=4.9.3
+
+# Computer Vision
+opencv-python>=4.8.1
+Pillow>=10.1.0
+
+# Visualization
+matplotlib>=3.8.2
+plotly>=5.18.0
+
+# ML Ops & Utilities
+wandb>=0.16.2  # For experiment tracking
+hydra-core>=1.3.2  # For configuration management
+pytest>=7.4.3  # For testing
+black>=23.12.1  # For code formatting
+isort>=5.13.2  # For import sorting
+mypy>=1.8.0  # For type checking

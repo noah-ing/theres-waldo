@@ -1,0 +1,39 @@
+# Vision Transformer base configuration
+model:
+  # Architecture parameters
+  num_heads: 12
+  num_layers: 12
+  hidden_dim: 768
+  mlp_dim: 3072
+  dropout_rate: 0.1
+  
+  # Training specific parameters
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_grad_norm: 1.0
+  
+  # Regularization
+  label_smoothing: 0.1
+  mixup_alpha: 0.2
+  
+  # Optimization
+  optimizer:
+    type: adamw
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 1.0e-8
+    
+  # Learning rate schedule
+  lr_schedule:
+    warmup_steps: 1000
+    decay_steps: 50000
+    min_lr_ratio: 0.01
+    
+  # Data augmentation
+  augmentation:
+    random_flip: true
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
