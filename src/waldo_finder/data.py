@@ -30,14 +30,29 @@ class WaldoDataset:
         self.batch_size = batch_size
         self.augment = augment
         
-        # Load annotations
+        # Load annotations from project root
+        project_root = Path(self.data_dir).resolve()
+        while not (project_root / 'annotations').exists() and project_root.parent != project_root:
+            project_root = project_root.parent
+        
+        # Load annotations and filter for existing images
+        self.project_root = project_root  # Store for later use
         self.annotations = pd.read_csv(
-            self.data_dir / 'annotations' / 'annotations.csv'
+            project_root / 'annotations' / 'annotations.csv'
         )
+        
+        # Filter annotations to only include existing images
+        existing_images = set(f.name for f in (project_root / 'images').iterdir() if f.is_file() and f.suffix.lower() == '.jpg')
+        self.annotations = self.annotations[self.annotations['filename'].isin(existing_images)]
+        
+        if len(self.annotations) == 0:
+            raise ValueError("No valid images found in dataset")
         
     def _load_image(self, image_path: str) -> np.ndarray:
         """Load and preprocess image."""
-        image = cv2.imread(str(self.data_dir / image_path))
+        image = cv2.imread(str(self.project_root / 'images' / image_path))
+        if image is None:
+            raise ValueError(f"Failed to load image: {image_path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         return image
     
@@ -135,10 +150,10 @@ class WaldoDataset:
             
             for _, row in shuffled.iterrows():
                 sample = self._prepare_sample(
-                    row['image_path'],
+                    row['filename'],
                     np.array([
-                        row['x_min'], row['y_min'],
-                        row['x_max'], row['y_max']
+                        row['xmin'], row['ymin'],
+                        row['xmax'], row['ymax']
                     ])
                 )
                 
@@ -172,10 +187,10 @@ class WaldoDataset:
         
         for _, row in val_data.iterrows():
             sample = self._prepare_sample(
-                row['image_path'],
+                row['filename'],
                 np.array([
-                    row['x_min'], row['y_min'],
-                    row['x_max'], row['y_max']
+                    row['xmin'], row['ymin'],
+                    row['xmax'], row['ymax']
                 ])
             )
             

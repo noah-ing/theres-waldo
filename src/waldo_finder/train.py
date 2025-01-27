@@ -17,7 +17,7 @@ from waldo_finder.model import (
 )
 from waldo_finder.data import WaldoDataset
 
-@hydra.main(config_path="../config", config_name="train")
+@hydra.main(config_path="../../config", config_name="train", version_base="1.1")
 def train(cfg: DictConfig) -> None:
     """Main training loop with modern ML practices.
     
@@ -46,15 +46,36 @@ def train(cfg: DictConfig) -> None:
         augment=False,
     )
     
+    print("Starting model initialization and JAX compilation (this may take a few minutes)...")
+    
     # Initialize model
     rng = jax.random.PRNGKey(cfg.training.seed)
     rng, init_rng = jax.random.split(rng)
     
+    # Calculate training parameters
+    steps_per_epoch = len(train_dataset.annotations) // cfg.training.batch_size
+    num_train_steps = steps_per_epoch * cfg.training.num_epochs
+    warmup_steps = steps_per_epoch * cfg.training.warmup_epochs
+    
+    print(f"Training schedule:")
+    print(f"- {steps_per_epoch} steps per epoch")
+    print(f"- {cfg.training.num_epochs} total epochs")
+    print(f"- {cfg.training.warmup_epochs} warmup epochs ({warmup_steps} steps)")
+    print(f"- {num_train_steps} total training steps")
+    print(f"- {cfg.training.learning_rate} peak learning rate")
+    print(f"- {cfg.training.batch_size} batch size")
+    
+    print("\nCreating train state...")
     state = create_train_state(
         init_rng,
         learning_rate=cfg.training.learning_rate,
         model_kwargs=dict(cfg.model),
+        num_train_steps=num_train_steps,
+        warmup_epochs=cfg.training.warmup_epochs,
+        steps_per_epoch=steps_per_epoch
     )
+    
+    print("\nStarting training loop...")
     
     # Training loop with modern practices
     best_val_loss = float('inf')
@@ -63,7 +84,7 @@ def train(cfg: DictConfig) -> None:
     for epoch in range(cfg.training.num_epochs):
         # Training
         train_metrics = []
-        train_pbar = tqdm(range(cfg.training.steps_per_epoch), desc=f'Epoch {epoch+1}')
+        train_pbar = tqdm(range(steps_per_epoch), desc=f'Epoch {epoch+1}')
         
         for _ in train_pbar:
             batch = next(train_loader)
@@ -111,12 +132,27 @@ def train(cfg: DictConfig) -> None:
             model_dir = Path(cfg.training.model_dir)
             model_dir.mkdir(parents=True, exist_ok=True)
             
-            with open(model_dir / 'best_model.pkl', 'wb') as f:
-                import pickle
-                pickle.dump(state, f)
+            # Convert JAX arrays to numpy and save
+            from flax.serialization import to_bytes, from_bytes
+            import pickle
             
-            # Log best model to wandb
-            wandb.save(str(model_dir / 'best_model.pkl'))
+            serialized_params = to_bytes(state.params)
+            serialized_opt_state = to_bytes(state.opt_state)
+            
+            with open(model_dir / 'model.pkl', 'wb') as f:
+                pickle.dump({
+                    'params': serialized_params,
+                    'opt_state': serialized_opt_state,
+                }, f)
+            
+            # Log best model to wandb using artifact
+            artifact = wandb.Artifact(
+                name=f"{cfg.experiment_name}-model",
+                type="model",
+                description="Best model checkpoint"
+            )
+            artifact.add_file(str(model_dir / 'model.pkl'))
+            wandb.log_artifact(artifact)
         
         print(f"Epoch {epoch+1}")
         print(f"Train Loss: {train_epoch_metrics['loss']:.4f}")

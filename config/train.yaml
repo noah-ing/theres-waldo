@@ -1,8 +1,8 @@
 defaults:
   - _self_
   - model: vit_base
-  - override hydra/hydra_logging: colorlog
-  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
 
 # Experiment settings
 experiment_name: waldo-finder-jax
@@ -10,18 +10,19 @@ seed: 42
 
 # Data settings
 data:
-  train_dir: ${oc.env:DATA_DIR}/train
-  val_dir: ${oc.env:DATA_DIR}/val
+  train_dir: "."  # Default to current directory, can be overridden via command line
+  val_dir: "."    # Use same directory for validation during development
   image_size: [640, 640]
 
 # Training settings
 training:
-  batch_size: 16
-  num_epochs: 100
-  steps_per_epoch: 100
-  learning_rate: 0.0001
+  batch_size: 4  # Smaller batch size for better gradient estimates
+  num_epochs: 50  # Fewer epochs but more focused
+  steps_per_epoch: null  # Let the dataset size determine steps
+  learning_rate: 0.001  # Higher learning rate for faster convergence
   seed: ${seed}
   model_dir: ${hydra:runtime.output_dir}/models
+  warmup_epochs: 5  # Add warmup period
 
 # Hydra settings
 hydra:

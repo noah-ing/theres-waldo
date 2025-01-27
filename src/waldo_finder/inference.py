@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from typing import Dict, Optional, Tuple, Union
 
-from waldo_finder.model import WaldoDetector
+from waldo_finder.model import WaldoDetector, create_train_state
 
 class WaldoFinder:
     """Modern interface for Waldo detection."""
@@ -25,9 +25,36 @@ class WaldoFinder:
         """
         self.model_path = Path(model_path)
         
-        # Load model state
+        # Initialize model with same config as training
+        self.model = WaldoDetector(
+            num_heads=12,
+            num_layers=12,
+            hidden_dim=768,
+            mlp_dim=3072,
+            dropout_rate=0.1
+        )
+
+        # Load serialized parameters
         with open(self.model_path, 'rb') as f:
-            self.state = pickle.load(f)
+            state_dict = pickle.load(f)
+            # Create initial state to get expected structure
+            rng = jax.random.PRNGKey(0)
+            state = create_train_state(
+                rng,
+                learning_rate=1e-4,  # Doesn't matter for inference
+                model_kwargs={
+                    'num_heads': 12,
+                    'num_layers': 12,
+                    'hidden_dim': 768,
+                    'mlp_dim': 3072,
+                    'dropout_rate': 0.1,
+                }
+            )
+            
+            # Deserialize parameters using the same structure as training
+            from flax.serialization import from_bytes
+            params = from_bytes(state.params, state_dict['params'])
+            self.variables = {'params': params}
         
         # JIT compile inference function
         self.predict_fn = jax.jit(self._predict)
@@ -82,10 +109,11 @@ class WaldoFinder:
     
     def _predict(self, image: np.ndarray) -> Dict[str, np.ndarray]:
         """Run model prediction."""
-        return self.state.apply_fn(
-            {'params': self.state.params},
+        return self.model.apply(
+            self.variables,
             image[None],  # Add batch dimension
-            training=False
+            training=False,
+            mutable=False
         )
     
     def _postprocess_boxes(self, 
@@ -133,6 +161,10 @@ class WaldoFinder:
         # Run inference
         outputs = self.predict_fn(processed)
         
+        # Print raw outputs for debugging
+        print(f"Raw boxes: {outputs['boxes'][0]}")
+        print(f"Raw scores: {outputs['scores'][0]}")
+        
         # Postprocess
         boxes, scores = self._postprocess_boxes(
             outputs['boxes'][0],  # Remove batch dimension
@@ -141,7 +173,7 @@ class WaldoFinder:
         )
         
         if len(boxes) == 0:
-            print("Could not find Waldo :(")
+            print(f"Could not find Waldo :( (threshold: {conf_threshold})")
             return {'boxes': boxes, 'scores': scores}
         
         print(f"Found Waldo! (Confidence: {scores[0]:.2%})")

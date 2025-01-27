@@ -1,6 +1,6 @@
 """JAX-based neural network model for Waldo detection."""
 
-from typing import Dict, Tuple, NamedTuple
+from typing import Dict, Tuple, NamedTuple, Optional
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -104,17 +104,39 @@ def sinusoidal_position_encoding(positions: jnp.ndarray, dim: int) -> jnp.ndarra
 
 def create_train_state(rng: jnp.ndarray, 
                       learning_rate: float, 
-                      model_kwargs: Dict) -> train_state.TrainState:
+                      model_kwargs: Dict,
+                      num_train_steps: Optional[int] = None,
+                      warmup_epochs: Optional[int] = None,
+                      steps_per_epoch: Optional[int] = None) -> train_state.TrainState:
     """Creates initial training state with modern optimizer configuration."""
-    model = WaldoDetector(**model_kwargs)
+    # Extract only the parameters expected by WaldoDetector
+    detector_kwargs = {
+        'num_heads': model_kwargs.get('num_heads', 12),
+        'num_layers': model_kwargs.get('num_layers', 12),
+        'hidden_dim': model_kwargs.get('hidden_dim', 768),
+        'mlp_dim': model_kwargs.get('mlp_dim', 3072),
+        'dropout_rate': model_kwargs.get('dropout_rate', 0.1),
+    }
+    model = WaldoDetector(**detector_kwargs)
     params = model.init(rng, jnp.ones((1, 640, 640, 3)))['params']
+    
+    # Calculate schedule parameters
+    if num_train_steps is None and steps_per_epoch is not None:
+        num_train_steps = steps_per_epoch * 50  # Default 50 epochs
+    
+    if warmup_epochs is not None and steps_per_epoch is not None:
+        warmup_steps = warmup_epochs * steps_per_epoch
+    else:
+        warmup_steps = min(1000, num_train_steps // 10) if num_train_steps else 1000
+    
+    decay_steps = num_train_steps if num_train_steps else 50000
     
     # Modern learning rate schedule with warmup and cosine decay
     scheduler = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=learning_rate,
-        warmup_steps=1000,
-        decay_steps=50000,
+        warmup_steps=warmup_steps,
+        decay_steps=decay_steps,
     )
     
     # Advanced optimizer configuration with weight decay
