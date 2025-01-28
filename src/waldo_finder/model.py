@@ -1,12 +1,17 @@
 """JAX-based neural network model for Waldo detection."""
 
-from typing import Dict, Tuple, NamedTuple, Optional
+from typing import Dict, Tuple, NamedTuple, Optional, Any
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
 from flax.training import train_state
 from flax.training import dynamic_scale as dynamic_scale_lib
+from flax.core import FrozenDict
 import optax
+
+class TrainState(train_state.TrainState):
+    """Custom train state with dropout RNG."""
+    dropout_rng: Any
 
 class BoundingBox(NamedTuple):
     """Bounding box coordinates."""
@@ -171,7 +176,7 @@ def create_train_state(rng: jnp.ndarray,
                       model_kwargs: Dict,
                       num_train_steps: Optional[int] = None,
                       warmup_epochs: Optional[int] = None,
-                      steps_per_epoch: Optional[int] = None) -> train_state.TrainState:
+                      steps_per_epoch: Optional[int] = None) -> TrainState:
     """Creates initial training state with modern optimizer configuration."""
     # Extract only the parameters expected by WaldoDetector
     detector_kwargs = {
@@ -215,12 +220,15 @@ def create_train_state(rng: jnp.ndarray,
         )
     )
     
-    return train_state.TrainState.create(
-        apply_fn=model.apply, params=params, tx=tx)
+    return TrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        tx=tx,
+        dropout_rng=rng)
 
 def compute_loss(params: Dict,
                 batch: Dict[str, jnp.ndarray],
-                state: train_state.TrainState,
+                state: TrainState,
                 rng: jnp.ndarray) -> Tuple[jnp.ndarray, Dict]:
     """Computes loss and metrics with modern loss formulation."""
     outputs = state.apply_fn(
@@ -311,9 +319,9 @@ def sigmoid_focal_loss(pred: jnp.ndarray,
     return alpha_t * focal_term * ce_loss
 
 @jax.jit
-def train_step(state: train_state.TrainState,
+def train_step(state: TrainState,
                batch: Dict[str, jnp.ndarray],
-               rng: jnp.ndarray) -> Tuple[train_state.TrainState, Dict]:
+               rng: jnp.ndarray) -> Tuple[TrainState, Dict]:
     """Performs a single training step with gradient clipping."""
     rng, dropout_rng = jax.random.split(rng)
     
@@ -332,11 +340,11 @@ def train_step(state: train_state.TrainState,
 
 @jax.jit
 def train_step_mixed_precision(
-    state: train_state.TrainState,
+    state: TrainState,
     batch: Dict[str, jnp.ndarray],
     rng: jnp.ndarray,
     dynamic_scale: dynamic_scale_lib.DynamicScale
-) -> Tuple[train_state.TrainState, Dict, dynamic_scale_lib.DynamicScale]:
+) -> Tuple[TrainState, Dict, dynamic_scale_lib.DynamicScale]:
     """Performs a single training step with mixed precision and dynamic scaling."""
     rng, dropout_rng = jax.random.split(rng)
     
@@ -370,7 +378,7 @@ def train_step_mixed_precision(
     return state, metrics, dynamic_scale
 
 @jax.jit
-def eval_step(state: train_state.TrainState,
+def eval_step(state: TrainState,
               batch: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
     """Performs evaluation step."""
     outputs = state.apply_fn(
