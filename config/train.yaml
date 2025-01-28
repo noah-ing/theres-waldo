@@ -14,15 +14,33 @@ data:
   val_dir: "."    # Use same directory for validation during development
   image_size: [640, 640]
 
-# Training settings
+# Advanced training settings
 training:
-  batch_size: 4  # Smaller batch size for better gradient estimates
-  num_epochs: 50  # Fewer epochs but more focused
-  steps_per_epoch: null  # Let the dataset size determine steps
-  learning_rate: 0.001  # Higher learning rate for faster convergence
+  batch_size: 16  # Larger batch size for better gradient estimation
+  num_epochs: 200  # Extended training for better convergence
+  steps_per_epoch: null  # Dynamic steps based on dataset
+  learning_rate: 0.00005  # Conservative base learning rate for Lion optimizer
   seed: ${seed}
   model_dir: ${hydra:runtime.output_dir}/models
-  warmup_epochs: 5  # Add warmup period
+  warmup_epochs: 15  # Extended warmup for stability
+  
+  # Advanced training features
+  gradient_accumulation_steps: 4  # Simulate larger batch size
+  mixed_precision: true  # Use mixed precision training
+  gradient_checkpointing: true  # Save memory
+  ema: true  # Use exponential moving average of weights
+  ema_decay: 0.9999
+  
+  # Advanced evaluation
+  eval_freq: 1  # Evaluate every epoch
+  save_best_only: true
+  early_stopping:
+    patience: 20
+    min_delta: 0.0001
+    
+  # Multi-GPU training settings
+  sync_bn: true  # Sync batch norm stats across GPUs
+  find_unused_parameters: true
 
 # Hydra settings
 hydra:

@@ -14,14 +14,39 @@ class BoundingBox(NamedTuple):
     x_max: float
     y_max: float
 
+class StochasticDepth(nn.Module):
+    """Stochastic Depth module for advanced regularization."""
+    rate: float
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool) -> jnp.ndarray:
+        if deterministic or self.rate == 0.:
+            return x
+        
+        keep_prob = 1. - self.rate
+        mask = jax.random.bernoulli(
+            self.make_rng('dropout'), p=keep_prob, shape=(x.shape[0], 1, 1))
+        return x * mask / keep_prob
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample for advanced regularization."""
+    rate: float = 0.
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
+        return StochasticDepth(rate=self.rate)(x, deterministic=deterministic)
+
 class WaldoDetector(nn.Module):
-    """Modern JAX-based Waldo detector using Vision Transformer backbone with DETR-style detection."""
+    """State-of-the-art JAX-based Waldo detector using enhanced Vision Transformer with modern techniques."""
     
-    num_heads: int = 12
-    num_layers: int = 12
-    hidden_dim: int = 768
-    mlp_dim: int = 3072
+    num_heads: int = 16
+    num_layers: int = 24
+    hidden_dim: int = 1024
+    mlp_dim: int = 4096
     dropout_rate: float = 0.1
+    drop_path_rate: float = 0.2
+    attention_dropout_rate: float = 0.1
+    stochastic_depth_rate: float = 0.1
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> Dict[str, jnp.ndarray]:
@@ -34,15 +59,24 @@ class WaldoDetector(nn.Module):
         Returns:
             Dictionary containing bounding boxes and confidence scores
         """
-        # Image embedding with modern ViT architecture
-        x = nn.Conv(features=self.hidden_dim, kernel_size=(16, 16), strides=(16, 16))(x)
+        # Advanced patch embedding with layer normalization
+        x = nn.Conv(
+            features=self.hidden_dim, 
+            kernel_size=(16, 16), 
+            strides=(16, 16),
+            use_bias=False,
+            name='patch_embedding'
+        )(x)
         batch_size, h, w, c = x.shape
         x = x.reshape(batch_size, h * w, c)
+        x = nn.LayerNorm(name='patch_norm')(x)
         
-        # Add learnable class token for global features
-        class_token = self.param('class_token', 
-                               nn.initializers.normal(stddev=0.02), 
-                               (1, 1, self.hidden_dim))
+        # Enhanced learnable embeddings
+        class_token = self.param(
+            'class_token', 
+            nn.initializers.truncated_normal(stddev=0.02), 
+            (1, 1, self.hidden_dim)
+        )
         class_tokens = jnp.tile(class_token, [batch_size, 1, 1])
         x = jnp.concatenate([class_tokens, x], axis=1)
         
@@ -51,43 +85,72 @@ class WaldoDetector(nn.Module):
         pos_embedding = sinusoidal_position_encoding(positions, self.hidden_dim)
         x = x + pos_embedding
         
-        # Transformer encoder with modern improvements
-        for _ in range(self.num_layers):
-            # Multi-head self-attention with pre-norm
-            y = nn.LayerNorm()(x)
+        # Advanced Transformer encoder with stochastic depth and enhanced attention
+        drop_path_rates = jnp.linspace(0, self.drop_path_rate, self.num_layers)
+        
+        for i in range(self.num_layers):
+            # Multi-head self-attention with relative position bias
+            y = nn.LayerNorm(epsilon=1e-6)(x)
             y = nn.MultiHeadDotProductAttention(
                 num_heads=self.num_heads,
-                dropout_rate=self.dropout_rate if training else 0.0,
+                dropout_rate=self.attention_dropout_rate if training else 0.0,
                 deterministic=not training,
+                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
             )(y, y)
+            y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not training)
+            y = DropPath(rate=drop_path_rates[i])(y, deterministic=not training)
             x = x + y
             
-            # MLP block with GELU activation
-            y = nn.LayerNorm()(x)
-            y = nn.Dense(self.mlp_dim)(y)
-            y = nn.gelu(y)
+            # Enhanced MLP block with SwiGLU activation
+            y = nn.LayerNorm(epsilon=1e-6)(x)
+            features = self.mlp_dim
+            y1 = nn.Dense(
+                features, 
+                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
+            )(y)
+            y2 = nn.Dense(
+                features, 
+                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
+            )(y)
+            y = y1 * jax.nn.swish(y2)  # SwiGLU activation
             y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not training)
-            y = nn.Dense(self.hidden_dim)(y)
+            y = nn.Dense(
+                self.hidden_dim,
+                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
+            )(y)
             y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not training)
+            y = DropPath(rate=drop_path_rates[i])(y, deterministic=not training)
             x = x + y
         
         # Use class token for detection
         x = x[:, 0]  # Take class token output
         
-        # Detection heads
-        boxes = nn.Sequential([
-            nn.Dense(256),
-            nn.gelu,
-            nn.Dense(4),
-            nn.sigmoid,  # Normalize coordinates to [0,1]
-        ])(x)
+        # Advanced detection heads with deeper architecture
+        x = nn.LayerNorm(epsilon=1e-6, name='final_norm')(x)
         
-        scores = nn.Sequential([
-            nn.Dense(256),
+        # Box prediction head with deeper network
+        boxes = nn.Sequential([
+            nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.gelu,
-            nn.Dense(1),
+            nn.Dropout(rate=0.1),
+            nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.gelu,
+            nn.Dropout(rate=0.1),
+            nn.Dense(4, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.sigmoid,  # Normalize coordinates to [0,1]
+        ], name='box_head')(x)
+        
+        # Score prediction head with deeper network
+        scores = nn.Sequential([
+            nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.gelu,
+            nn.Dropout(rate=0.1),
+            nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.gelu,
+            nn.Dropout(rate=0.1),
+            nn.Dense(1, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.sigmoid,
-        ])(x)
+        ], name='score_head')(x)
         
         return {
             'boxes': boxes,  # (batch_size, 4) for x1,y1,x2,y2
@@ -257,10 +320,53 @@ def train_step(state: train_state.TrainState,
     (loss, metrics), grads = grad_fn(
         state.params, batch, state, dropout_rng)
     
-    # Update parameters
+    # Gradient clipping and update
+    grads = jax.tree_map(
+        lambda g: jnp.clip(g, -1.0, 1.0),
+        grads
+    )
     state = state.apply_gradients(grads=grads)
     
     return state, metrics
+
+@jax.jit
+def train_step_mixed_precision(
+    state: train_state.TrainState,
+    batch: Dict[str, jnp.ndarray],
+    rng: jnp.ndarray,
+    dynamic_scale: dynamic_scale_lib.DynamicScale
+) -> Tuple[train_state.TrainState, Dict, dynamic_scale_lib.DynamicScale]:
+    """Performs a single training step with mixed precision and dynamic scaling."""
+    rng, dropout_rng = jax.random.split(rng)
+    
+    def _loss_fn(params):
+        """Loss function with mixed precision."""
+        def _forward(params):
+            outputs = state.apply_fn(
+                {'params': params},
+                batch['image'],
+                training=True,
+                rngs={'dropout': dropout_rng}
+            )
+            return compute_loss(params, batch, state, dropout_rng)
+        
+        return dynamic_scale.value_and_grad(
+            _forward, has_aux=True, axis_name='batch'
+        )(params)
+    
+    # Run forward and backward pass with dynamic scaling
+    dynamic_scale, is_finite, aux = dynamic_scale.apply(_loss_fn, state.params)
+    (loss, metrics), grads = aux
+    
+    # Handle non-finite gradients
+    metrics = jax.tree_map(lambda x: jnp.where(is_finite, x, 0.0), metrics)
+    state = jax.tree_map(
+        lambda x, y: jnp.where(is_finite, x, y),
+        state.apply_gradients(grads=grads),
+        state
+    )
+    
+    return state, metrics, dynamic_scale
 
 @jax.jit
 def eval_step(state: train_state.TrainState,

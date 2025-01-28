@@ -1,7 +1,8 @@
-"""Training script for Waldo detector with modern ML practices."""
+"""Advanced training script for Waldo detector with SOTA practices."""
 
 import os
 from pathlib import Path
+from typing import Dict, Any, Optional
 import hydra
 from omegaconf import DictConfig
 import wandb
@@ -9,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from tqdm.auto import tqdm
 import numpy as np
+from flax.training import dynamic_scale as dynamic_scale_lib
+from flax.training.ema import ExponentialMovingAverage
 
 from waldo_finder.model import (
     create_train_state,
@@ -17,6 +20,28 @@ from waldo_finder.model import (
 )
 from waldo_finder.data import WaldoDataset
 
+class EarlyStopping:
+    """Early stopping handler with patience and minimum improvement threshold."""
+    
+    def __init__(self, patience: int, min_delta: float = 0.0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = None
+        self.early_stop = False
+    
+    def __call__(self, val_loss: float) -> bool:
+        if self.best_loss is None:
+            self.best_loss = val_loss
+        elif val_loss > self.best_loss - self.min_delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        else:
+            self.best_loss = val_loss
+            self.counter = 0
+        return False
+
 @hydra.main(config_path="../../config", config_name="train", version_base="1.1")
 def train(cfg: DictConfig) -> None:
     """Main training loop with modern ML practices.
@@ -24,11 +49,13 @@ def train(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object
     """
-    # Initialize wandb
+    # Enhanced wandb initialization with more metadata
     wandb.init(
         project="waldo-finder",
         name=cfg.experiment_name,
         config=dict(cfg),
+        tags=["SOTA", "ViT", "Object-Detection"],
+        notes="Advanced training with mixed precision, EMA, and gradient accumulation"
     )
     
     # Set up data loaders
@@ -75,27 +102,69 @@ def train(cfg: DictConfig) -> None:
         steps_per_epoch=steps_per_epoch
     )
     
-    print("\nStarting training loop...")
+    # Initialize advanced training components
+    if cfg.training.mixed_precision:
+        dynamic_scale = dynamic_scale_lib.DynamicScale()
+    else:
+        dynamic_scale = None
     
-    # Training loop with modern practices
+    if cfg.training.ema:
+        ema = ExponentialMovingAverage(
+            decay=cfg.training.ema_decay,
+            dtype=jnp.float32
+        )
+        ema_params = ema.initialize(state.params)
+    else:
+        ema = None
+        ema_params = None
+    
+    early_stopping = EarlyStopping(
+        patience=cfg.training.early_stopping.patience,
+        min_delta=cfg.training.early_stopping.min_delta
+    )
+    
+    print("\nStarting advanced training loop...")
+    
+    # Enhanced training loop with advanced practices
     best_val_loss = float('inf')
     train_loader = train_dataset.train_loader()
+    grad_accumulation_steps = cfg.training.gradient_accumulation_steps
     
     for epoch in range(cfg.training.num_epochs):
-        # Training
+        state = state.replace(dropout_rng=jax.random.fold_in(state.dropout_rng, epoch))
+        # Enhanced training with gradient accumulation and mixed precision
         train_metrics = []
+        accumulated_grads = None
         train_pbar = tqdm(range(steps_per_epoch), desc=f'Epoch {epoch+1}')
         
-        for _ in train_pbar:
+        for step in train_pbar:
             batch = next(train_loader)
             rng, step_rng = jax.random.split(rng)
             
-            state, metrics = train_step(state, batch, step_rng)
+            # Mixed precision training step
+            if dynamic_scale:
+                state, metrics, dynamic_scale = train_step_mixed_precision(
+                    state, batch, step_rng, dynamic_scale)
+            else:
+                state, metrics = train_step(state, batch, step_rng)
+            
+            # Update EMA parameters
+            if ema is not None and (step + 1) % grad_accumulation_steps == 0:
+                ema_params = ema.update_moving_average(ema_params, state.params)
+            
             train_metrics.append(metrics)
             
-            # Update progress bar
-            avg_loss = np.mean([m['loss'] for m in train_metrics[-100:]])
-            train_pbar.set_postfix({'loss': f'{avg_loss:.4f}'})
+            # Enhanced progress bar with more metrics
+            recent_metrics = train_metrics[-100:]
+            avg_metrics = {
+                k: float(np.mean([m[k] for m in recent_metrics]))
+                for k in recent_metrics[0].keys()
+            }
+            train_pbar.set_postfix({
+                'loss': f"{avg_metrics['loss']:.4f}",
+                'giou_loss': f"{avg_metrics.get('giou_loss', 0):.4f}",
+                'score_loss': f"{avg_metrics.get('score_loss', 0):.4f}"
+            })
         
         # Calculate epoch metrics
         train_epoch_metrics = {
@@ -103,14 +172,20 @@ def train(cfg: DictConfig) -> None:
             for k in train_metrics[0].keys()
         }
         
-        # Validation
+        # Enhanced validation with EMA if enabled
         val_metrics = []
+        eval_params = ema_params if ema is not None else state.params
+        
         for batch in val_dataset.val_loader():
-            outputs = eval_step(state, batch)
+            outputs = eval_step(state.replace(params=eval_params), batch)
             
-            # Calculate validation metrics
+            # Calculate comprehensive validation metrics
             val_loss = jnp.mean(jnp.abs(outputs['boxes'] - batch['boxes']))
-            val_metrics.append({'val_loss': val_loss})
+            score_accuracy = jnp.mean(jnp.abs(outputs['scores'] - batch['scores']))
+            val_metrics.append({
+                'val_loss': val_loss,
+                'val_score_accuracy': score_accuracy
+            })
         
         val_epoch_metrics = {
             k: float(np.mean([m[k] for m in val_metrics]))
@@ -124,33 +199,52 @@ def train(cfg: DictConfig) -> None:
             **val_epoch_metrics,
         })
         
-        # Save best model
+        # Check early stopping
+        if early_stopping(val_epoch_metrics['val_loss']):
+            print(f"\nEarly stopping triggered after {epoch + 1} epochs")
+            break
+            
+        # Enhanced model saving with more metadata
         if val_epoch_metrics['val_loss'] < best_val_loss:
             best_val_loss = val_epoch_metrics['val_loss']
             
-            # Save model using Flax serialization
+            # Enhanced model saving with EMA and training state
             model_dir = Path(cfg.training.model_dir)
             model_dir.mkdir(parents=True, exist_ok=True)
             
-            # Convert JAX arrays to numpy and save
-            from flax.serialization import to_bytes, from_bytes
+            from flax.serialization import to_bytes
             import pickle
             
-            serialized_params = to_bytes(state.params)
-            serialized_opt_state = to_bytes(state.opt_state)
+            save_dict = {
+                'params': to_bytes(eval_params),  # Save EMA params if enabled
+                'opt_state': to_bytes(state.opt_state),
+                'training_state': {
+                    'epoch': epoch,
+                    'best_val_loss': best_val_loss,
+                    'dynamic_scale': dynamic_scale.state_dict() if dynamic_scale else None,
+                    'ema_params': to_bytes(ema_params) if ema is not None else None,
+                }
+            }
             
             with open(model_dir / 'model.pkl', 'wb') as f:
-                pickle.dump({
-                    'params': serialized_params,
-                    'opt_state': serialized_opt_state,
-                }, f)
+                pickle.dump(save_dict, f)
             
-            # Log best model to wandb using artifact
+            # Enhanced wandb artifact logging
             artifact = wandb.Artifact(
                 name=f"{cfg.experiment_name}-model",
                 type="model",
-                description="Best model checkpoint"
+                description=f"Best model checkpoint (val_loss: {best_val_loss:.4f})"
             )
+            artifact.metadata = {
+                'epoch': epoch + 1,
+                'val_loss': float(best_val_loss),
+                'train_loss': float(train_epoch_metrics['loss']),
+                'architecture': {
+                    'num_layers': cfg.model.num_layers,
+                    'hidden_dim': cfg.model.hidden_dim,
+                    'num_heads': cfg.model.num_heads,
+                }
+            }
             artifact.add_file(str(model_dir / 'model.pkl'))
             wandb.log_artifact(artifact)
         

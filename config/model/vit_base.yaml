@@ -1,39 +1,52 @@
-# Vision Transformer base configuration
+# Vision Transformer large configuration with advanced techniques
 model:
-  # Architecture parameters - lighter for faster training
-  num_heads: 8
-  num_layers: 8
-  hidden_dim: 512
-  mlp_dim: 2048
-  dropout_rate: 0.2  # Increased for better regularization
+  # Architecture parameters - increased capacity for SOTA performance
+  num_heads: 16
+  num_layers: 24
+  hidden_dim: 1024
+  mlp_dim: 4096
+  dropout_rate: 0.1
   
-  # Training specific parameters
-  weight_decay: 0.05  # Increased for better regularization
-  warmup_steps: 1000
+  # Advanced training parameters
+  weight_decay: 0.05
+  warmup_steps: 2000
   max_grad_norm: 1.0
   
-  # Regularization - increased for better generalization
-  label_smoothing: 0.2
-  mixup_alpha: 0.4
+  # Advanced regularization techniques
+  label_smoothing: 0.1
+  mixup_alpha: 0.8
+  cutmix_alpha: 1.0
+  drop_path_rate: 0.2
+  stochastic_depth_rate: 0.1
   
-  # Optimization
+  # Sophisticated optimization
   optimizer:
-    type: adamw
+    type: lion  # Advanced optimizer
     beta1: 0.9
-    beta2: 0.999
+    beta2: 0.99
     epsilon: 1.0e-8
     
-  # Learning rate schedule
+  # Cyclic learning rate schedule with warmup
   lr_schedule:
-    warmup_steps: 1000
-    decay_steps: 50000
-    min_lr_ratio: 0.01
+    warmup_steps: 2000
+    decay_steps: 100000
+    min_lr_ratio: 0.001
+    cycles: 3  # Multiple cycles for better convergence
     
-    # Data augmentation - stronger for better generalization
+  # Advanced data augmentation pipeline
   augmentation:
     random_flip: true
+    random_rotation: 15  # Degrees
+    random_scale: [0.8, 1.2]
+    random_shear: 10  # Degrees
     color_jitter:
-      brightness: 0.4
-      contrast: 0.4
-      saturation: 0.4
+      brightness: 0.5
+      contrast: 0.5
+      saturation: 0.5
       hue: 0.2
+    random_erasing: 0.25
+    auto_augment: true  # Use AutoAugment policy
+    trivial_augment: true  # Use TrivialAugment
+    random_augment:  # RandAugment
+      num_ops: 2
+      magnitude: 9

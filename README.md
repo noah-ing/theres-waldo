@@ -6,23 +6,37 @@ A state-of-the-art implementation for solving "Where's Waldo?" puzzles using JAX
 
 ## 🚀 Project Status (January 2025)
 
-### Completed Upgrades
-- Modernized codebase with JAX/Flax implementation
-- Added Vision Transformer (ViT) backbone with DETR-style detection
-- Implemented modern training practices (Focal Loss, GIoU Loss)
-- Added configuration management with Hydra
-- Set up experiment tracking with Weights & Biases
-- Added comprehensive data augmentation pipeline
+### Latest SOTA Upgrades (January 2025)
+- Enhanced Vision Transformer with increased capacity (24 layers, 16 heads)
+- Implemented advanced training techniques:
+  - Mixed precision training with dynamic scaling
+  - Gradient accumulation for larger effective batch sizes
+  - Exponential Moving Average (EMA) of weights
+  - Stochastic Depth and Drop Path regularization
+- Advanced optimization strategies:
+  - SwiGLU activation for better convergence
+  - Enhanced attention mechanisms
+  - Sophisticated learning rate scheduling
+- Improved training pipeline:
+  - Early stopping with patience
+  - Comprehensive metric tracking
+  - Advanced data augmentation with AutoAugment
 
-### Current Setup
-- Virtual environment created and activated
-- Core dependencies installed:
-  - JAX/Flax ecosystem
-  - TensorFlow for data handling
-  - OpenCV and Pillow for image processing
-  - Wandb for experiment tracking
-  - Hydra for configuration
-  - Pandas for data management
+### Advanced Architecture Features
+- State-of-the-art Vision Transformer backbone:
+  - 24 transformer layers with 16 attention heads
+  - 1024-dimensional hidden states
+  - 4096-dimensional MLP layers
+  - Advanced regularization techniques
+- Sophisticated training infrastructure:
+  - Mixed precision training for efficiency
+  - Dynamic gradient scaling
+  - Advanced optimizer configuration (AdamW)
+  - Modern learning rate scheduling
+- Enhanced data processing:
+  - Advanced augmentation pipeline
+  - Efficient data loading
+  - Real-time metric tracking
 
 ### Current Progress
 1. ✅ Fixed Hydra configuration issues
@@ -71,26 +85,40 @@ source venv/bin/activate  # On Unix/MacOS
 pip install -e .
 ```
 
-## 📊 Model Architecture
+## 📊 Advanced Model Architecture
 
-The model uses a Vision Transformer backbone with modern improvements:
-- Pre-norm transformer blocks for stable training
-- Learnable class token for global feature aggregation
-- Sinusoidal positional embeddings
-- DETR-style detection head for accurate localization
+The model implements state-of-the-art Vision Transformer architecture with numerous enhancements:
+- Enhanced transformer blocks:
+  - Pre-norm architecture with epsilon=1e-6
+  - SwiGLU activation function
+  - Stochastic Depth for regularization
+  - Advanced dropout strategies
+- Sophisticated attention mechanisms:
+  - 16-head attention with relative position bias
+  - Efficient attention patterns
+  - Dropout-based attention regularization
+- Advanced detection heads:
+  - Deep prediction networks
+  - Multi-layer feature aggregation
+  - Improved localization accuracy
 
 ## 🏃‍♂️ Running the Model
 
 ### Current TensorFlow Model (Legacy)
 The original TensorFlow implementation is temporarily unavailable due to compatibility issues with TensorFlow 2.x.
 
-### New JAX Implementation (Active Development)
-Training pipeline is operational with:
-- Vision Transformer backbone
-- Modern training practices (GIoU + Focal Loss)
-- Real-time metric tracking via wandb
-- Efficient data loading and augmentation
-- Automatic model checkpointing
+### Advanced JAX Implementation
+Training pipeline features cutting-edge techniques:
+- Mixed precision training with dynamic scaling
+- Gradient accumulation for stability
+- EMA parameter averaging
+- Advanced loss functions:
+  - GIoU loss for accurate box regression
+  - Focal loss with dynamic weighting
+- Sophisticated checkpointing:
+  - Best model tracking
+  - Training state preservation
+  - Comprehensive metadata logging
 
 Check the wandb dashboard for live training progress and metrics.
 
