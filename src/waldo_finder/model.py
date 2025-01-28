@@ -26,13 +26,14 @@ class StochasticDepth(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, deterministic: bool) -> jnp.ndarray:
-        if deterministic or self.rate == 0.:
-            return x
-        
         keep_prob = 1. - self.rate
         mask = jax.random.bernoulli(
             self.make_rng('dropout'), p=keep_prob, shape=(x.shape[0], 1, 1))
-        return x * mask / keep_prob
+        return jnp.where(
+            jnp.logical_or(deterministic, self.rate <= 0.),
+            x,
+            x * mask / keep_prob
+        )
 
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample for advanced regularization."""
@@ -45,11 +46,11 @@ class DropPath(nn.Module):
 class WaldoDetector(nn.Module):
     """State-of-the-art JAX-based Waldo detector using enhanced Vision Transformer with modern techniques."""
     
-    num_heads: int = 16
-    num_layers: int = 24
-    hidden_dim: int = 1024
-    mlp_dim: int = 4096
-    dropout_rate: float = 0.1
+    num_heads: int = 12
+    num_layers: int = 12
+    hidden_dim: int = 768
+    mlp_dim: int = 3072
+    dropout_rate: float = 0.2
     drop_path_rate: float = 0.2
     attention_dropout_rate: float = 0.1
     stochastic_depth_rate: float = 0.1
@@ -350,22 +351,17 @@ def train_step_mixed_precision(
     
     def _loss_fn(params):
         """Loss function with mixed precision."""
-        def _forward(params):
-            outputs = state.apply_fn(
-                {'params': params},
-                batch['image'],
-                training=True,
-                rngs={'dropout': dropout_rng}
-            )
-            return compute_loss(params, batch, state, dropout_rng)
-        
-        return dynamic_scale.value_and_grad(
-            _forward, has_aux=True, axis_name='batch'
-        )(params)
+        outputs = state.apply_fn(
+            {'params': params},
+            batch['image'],
+            training=True,
+            rngs={'dropout': dropout_rng}
+        )
+        return compute_loss(params, batch, state, dropout_rng)
     
     # Run forward and backward pass with dynamic scaling
-    dynamic_scale, is_finite, aux = dynamic_scale.apply(_loss_fn, state.params)
-    (loss, metrics), grads = aux
+    dynamic_scale, is_finite, (loss, metrics), grads = dynamic_scale.value_and_grad(
+        _loss_fn, has_aux=True)(state.params)
     
     # Handle non-finite gradients
     metrics = jax.tree_map(lambda x: jnp.where(is_finite, x, 0.0), metrics)
@@ -385,5 +381,6 @@ def eval_step(state: TrainState,
         {'params': state.params},
         batch['image'],
         training=False,
+        rngs={'dropout': state.dropout_rng}  # Provide PRNG key for dropout
     )
     return outputs

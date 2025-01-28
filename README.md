@@ -6,28 +6,36 @@ A state-of-the-art implementation for solving "Where's Waldo?" puzzles using JAX
 
 ## 🚀 Project Status (January 2025)
 
-### Latest SOTA Upgrades (January 2025)
-- Enhanced Vision Transformer with increased capacity (24 layers, 16 heads)
-- Implemented advanced training techniques:
-  - Mixed precision training with dynamic scaling
-  - Gradient accumulation for larger effective batch sizes
+### Latest Memory & Training Optimizations (January 2025)
+- Memory-Efficient Architecture:
+  - Optimized 12-layer Vision Transformer (down from 24)
+  - Efficient 12-head attention mechanism
+  - Balanced 768-dim hidden states (reduced from 1024)
+  - Memory-efficient 3072-dim MLP layers
+  - Enhanced gradient checkpointing
+- Advanced Training Pipeline:
+  - Smart gradient accumulation (16 steps)
+  - Optimized batch size (8) with effective batch size of 128
+  - Multiple dataset passes per epoch for better utilization
+  - Improved data augmentation with shape consistency
+  - Stable mixed precision training
+- Sophisticated Optimization:
+  - Lion optimizer with tuned learning rate (0.0002)
+  - Efficient warmup and cosine decay scheduling
+  - Enhanced dropout and regularization
   - Exponential Moving Average (EMA) of weights
-  - Stochastic Depth and Drop Path regularization
-- Advanced optimization strategies:
-  - SwiGLU activation for better convergence
-  - Enhanced attention mechanisms
-  - Sophisticated learning rate scheduling
-- Improved training pipeline:
-  - Early stopping with patience
-  - Comprehensive metric tracking
-  - Advanced data augmentation with AutoAugment
+- Robust Training Features:
+  - Early stopping with configurable patience
+  - Comprehensive metric tracking (loss, GIoU, scores)
+  - Advanced data augmentation with shape preservation
+  - Real-time progress monitoring
 
 ### Advanced Architecture Features
-- State-of-the-art Vision Transformer backbone:
-  - 24 transformer layers with 16 attention heads
-  - 1024-dimensional hidden states
-  - 4096-dimensional MLP layers
-  - Advanced regularization techniques
+- Memory-Efficient Vision Transformer:
+  - 12 transformer layers with 12 attention heads
+  - 768-dimensional hidden states
+  - 3072-dimensional MLP layers
+  - Gradient checkpointing for memory efficiency
 - Sophisticated training infrastructure:
   - Mixed precision training for efficiency
   - Dynamic gradient scaling
@@ -94,9 +102,9 @@ The model implements state-of-the-art Vision Transformer architecture with numer
   - Stochastic Depth for regularization
   - Advanced dropout strategies
 - Sophisticated attention mechanisms:
-  - 16-head attention with relative position bias
-  - Efficient attention patterns
-  - Dropout-based attention regularization
+  - 12-head attention with relative position bias
+  - Memory-efficient attention patterns
+  - Optimized attention regularization
 - Advanced detection heads:
   - Deep prediction networks
   - Multi-layer feature aggregation

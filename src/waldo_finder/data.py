@@ -94,25 +94,44 @@ class WaldoDataset:
     def _apply_augmentations(self,
                            image: np.ndarray,
                            box: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply modern augmentation techniques."""
+        """Apply advanced augmentation techniques for better generalization."""
         if not self.augment:
             return image, box
             
-        # Random horizontal flip
+        # Random horizontal/vertical flips
         if np.random.random() > 0.5:
             image = np.fliplr(image)
             box[[0, 2]] = 1 - box[[2, 0]]  # Flip x coordinates
+        if np.random.random() > 0.8:  # Less frequent vertical flip
+            image = np.flipud(image)
+            box[[1, 3]] = 1 - box[[3, 1]]  # Flip y coordinates
             
-        # Random brightness/contrast
-        image = tf.image.random_brightness(image, 0.2)
-        image = tf.image.random_contrast(image, 0.8, 1.2)
+        # Simple but effective augmentations
+        if np.random.random() > 0.5:
+            # Random zoom/scale with fixed output size
+            scale = np.random.uniform(0.9, 1.1)
+            h, w = image.shape[:2]
+            scaled_h, scaled_w = int(h * scale), int(w * scale)
+            scaled = cv2.resize(image, (scaled_w, scaled_h))
+            
+            # Resize back to original size
+            image = cv2.resize(scaled, (w, h))
+            # No need to adjust box coordinates since we maintain original size
+            
+        # Convert to tensor for color augmentations
+        image = tf.convert_to_tensor(image)
         
-        # Random saturation
-        image = tf.image.random_saturation(image, 0.8, 1.2)
+        # Color augmentations with higher intensity
+        image = tf.image.random_brightness(image, 0.3)
+        image = tf.image.random_contrast(image, 0.7, 1.3)
+        image = tf.image.random_saturation(image, 0.7, 1.3)
+        image = tf.image.random_hue(image, 0.15)
         
-        # Random hue
-        image = tf.image.random_hue(image, 0.1)
-        
+        # Gaussian noise
+        if np.random.random() > 0.5:
+            noise = np.random.normal(0, 10, image.shape)
+            image = image + noise
+            
         # Ensure valid image range
         image = tf.clip_by_value(image, 0, 255)
         

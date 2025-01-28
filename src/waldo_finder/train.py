@@ -74,26 +74,19 @@ def train(cfg: DictConfig) -> None:
         augment=False,
     )
     
-    print("Starting model initialization and JAX compilation (this may take a few minutes)...")
-    
-    # Initialize model
+    print("Starting initialization...")
+    print("1/5: Setting up JAX...")
     rng = jax.random.PRNGKey(cfg.training.seed)
     rng, init_rng = jax.random.split(rng)
     
-    # Calculate training parameters
-    steps_per_epoch = len(train_dataset.annotations) // cfg.training.batch_size
+    print("2/5: Creating initial state...")
+    # Calculate training parameters with multiple passes per epoch
+    base_steps = len(train_dataset.annotations) // cfg.training.batch_size
+    passes_per_epoch = 4  # Multiple passes over dataset per epoch
+    steps_per_epoch = base_steps * passes_per_epoch
     num_train_steps = steps_per_epoch * cfg.training.num_epochs
     warmup_steps = steps_per_epoch * cfg.training.warmup_epochs
     
-    print(f"Training schedule:")
-    print(f"- {steps_per_epoch} steps per epoch")
-    print(f"- {cfg.training.num_epochs} total epochs")
-    print(f"- {cfg.training.warmup_epochs} warmup epochs ({warmup_steps} steps)")
-    print(f"- {num_train_steps} total training steps")
-    print(f"- {cfg.training.learning_rate} peak learning rate")
-    print(f"- {cfg.training.batch_size} batch size")
-    
-    print("\nCreating train state...")
     state = create_train_state(
         init_rng,
         learning_rate=cfg.training.learning_rate,
@@ -103,11 +96,35 @@ def train(cfg: DictConfig) -> None:
         steps_per_epoch=steps_per_epoch
     )
     
-    # Initialize advanced training components
-    if cfg.training.mixed_precision:
-        dynamic_scale = dynamic_scale_lib.DynamicScale()
-    else:
-        dynamic_scale = None
+    print("3/5: Pre-compiling JAX functions...")
+    # Pre-compile JAX functions with dummy data
+    dummy_batch = {
+        'image': np.zeros((cfg.training.batch_size, *cfg.data.image_size, 3), dtype=np.float32),
+        'boxes': np.zeros((cfg.training.batch_size, 4), dtype=np.float32),
+        'scores': np.ones((cfg.training.batch_size, 1), dtype=np.float32),
+    }
+    dummy_rng = jax.random.PRNGKey(0)
+    
+    # Compile steps ahead of time with proper RNG keys
+    print("  - Compiling train_step...")
+    _ = jax.jit(train_step)(state, dummy_batch, dummy_rng)
+    print("  - Compiling eval_step...")
+    _ = jax.jit(eval_step)(state.replace(dropout_rng=dummy_rng), dummy_batch)
+    print("4/5: JAX compilation complete")
+    
+    print("5/5: Preparing data loaders...")
+    
+    print(f"\nTraining schedule:")
+    print(f"- {steps_per_epoch} steps per epoch")
+    print(f"- {cfg.training.num_epochs} total epochs")
+    print(f"- {cfg.training.warmup_epochs} warmup epochs ({warmup_steps} steps)")
+    print(f"- {num_train_steps} total training steps")
+    print(f"- {cfg.training.learning_rate} peak learning rate")
+    print(f"- {cfg.training.batch_size} batch size")
+    print(f"- {len(train_dataset.annotations)} total training images")
+    
+    # Temporarily disable mixed precision until we get stable training
+    dynamic_scale = None
     
     if cfg.training.ema:
         ema_decay = cfg.training.ema_decay
