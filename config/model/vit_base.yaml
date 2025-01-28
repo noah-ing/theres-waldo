@@ -1,16 +1,17 @@
 # Vision Transformer large configuration with advanced techniques
 model:
   # Architecture parameters - increased capacity for SOTA performance
-  num_heads: 16
-  num_layers: 24
-  hidden_dim: 1024
-  mlp_dim: 4096
-  dropout_rate: 0.1
+  num_heads: 12
+  num_layers: 12
+  hidden_dim: 768
+  mlp_dim: 3072
+  dropout_rate: 0.2
   
   # Advanced training parameters
   weight_decay: 0.05
   warmup_steps: 2000
   max_grad_norm: 1.0
+  gradient_checkpointing: true  # Enable for memory efficiency
   
   # Advanced regularization techniques
   label_smoothing: 0.1

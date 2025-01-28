@@ -16,6 +16,7 @@ from flax.training import common_utils
 from waldo_finder.model import (
     create_train_state,
     train_step,
+    train_step_mixed_precision,
     eval_step,
 )
 from waldo_finder.data import WaldoDataset
