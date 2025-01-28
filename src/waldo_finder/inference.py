@@ -2,7 +2,6 @@
 
 import argparse
 from pathlib import Path
-import pickle
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -11,6 +10,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from typing import Dict, Optional, Tuple, Union
+from flax.serialization import msgpack_restore
 
 from waldo_finder.model import WaldoDetector, create_train_state
 
@@ -34,26 +34,24 @@ class WaldoFinder:
             dropout_rate=0.1
         )
 
-        # Load serialized parameters
+        # Create initial state to get expected structure
+        rng = jax.random.PRNGKey(0)
+        state = create_train_state(
+            rng,
+            learning_rate=1e-4,  # Doesn't matter for inference
+            model_kwargs={
+                'num_heads': 12,
+                'num_layers': 12,
+                'hidden_dim': 768,
+                'mlp_dim': 3072,
+                'dropout_rate': 0.1,
+            }
+        )
+        
+        # Load and deserialize parameters
         with open(self.model_path, 'rb') as f:
-            state_dict = pickle.load(f)
-            # Create initial state to get expected structure
-            rng = jax.random.PRNGKey(0)
-            state = create_train_state(
-                rng,
-                learning_rate=1e-4,  # Doesn't matter for inference
-                model_kwargs={
-                    'num_heads': 12,
-                    'num_layers': 12,
-                    'hidden_dim': 768,
-                    'mlp_dim': 3072,
-                    'dropout_rate': 0.1,
-                }
-            )
-            
-            # Deserialize parameters using the same structure as training
-            from flax.serialization import from_bytes
-            params = from_bytes(state.params, state_dict['params'])
+            serialized_params = f.read()
+            params = msgpack_restore(serialized_params)
             self.variables = {'params': params}
         
         # JIT compile inference function
@@ -113,7 +111,8 @@ class WaldoFinder:
             self.variables,
             image[None],  # Add batch dimension
             training=False,
-            mutable=False
+            mutable=False,
+            rngs={'dropout': jax.random.PRNGKey(0)}  # Fixed seed for inference
         )
     
     def _postprocess_boxes(self, 
@@ -129,12 +128,27 @@ class WaldoFinder:
         boxes = boxes[mask]
         scores = scores[mask]
         
-        # Convert normalized coordinates back to original size
+        # Convert to numpy and ensure 2D array
+        boxes = np.array(boxes).reshape(-1, 4)
+        scores = np.array(scores).reshape(-1)
+        
+        # Model outputs normalized coordinates in [0,1]
         boxes = boxes.copy()
         
+        # Ensure x1 < x2 and y1 < y2
+        boxes = np.stack([
+            np.minimum(boxes[:, 0], boxes[:, 2]),  # x1
+            np.minimum(boxes[:, 1], boxes[:, 3]),  # y1
+            np.maximum(boxes[:, 0], boxes[:, 2]),  # x2
+            np.maximum(boxes[:, 1], boxes[:, 3]),  # y2
+        ], axis=1)
+        
+        # Denormalize to padded image size
+        boxes = boxes * 640
+        
         # Remove padding
-        boxes[[0, 2]] = (boxes[[0, 2]] * 640 - self.pad_info['pad_w'])
-        boxes[[1, 3]] = (boxes[[1, 3]] * 640 - self.pad_info['pad_h'])
+        boxes[:, [0, 2]] -= self.pad_info['pad_w']
+        boxes[:, [1, 3]] -= self.pad_info['pad_h']
         
         # Scale back to original size
         boxes = boxes / self.pad_info['scale']

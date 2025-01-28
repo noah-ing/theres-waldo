@@ -2,8 +2,6 @@
 
 from typing import Dict, Iterator, Tuple
 import jax.numpy as jnp
-import tensorflow as tf
-import tensorflow_datasets as tfds
 import cv2
 import numpy as np
 from pathlib import Path
@@ -118,22 +116,29 @@ class WaldoDataset:
             image = cv2.resize(scaled, (w, h))
             # No need to adjust box coordinates since we maintain original size
             
-        # Convert to tensor for color augmentations
-        image = tf.convert_to_tensor(image)
-        
-        # Color augmentations with higher intensity
-        image = tf.image.random_brightness(image, 0.3)
-        image = tf.image.random_contrast(image, 0.7, 1.3)
-        image = tf.image.random_saturation(image, 0.7, 1.3)
-        image = tf.image.random_hue(image, 0.15)
-        
+        # Color augmentations using OpenCV
+        if np.random.random() > 0.5:
+            # Random brightness
+            brightness = np.random.uniform(0.7, 1.3)
+            image = cv2.convertScaleAbs(image, alpha=brightness, beta=0)
+            
+        if np.random.random() > 0.5:
+            # Random contrast
+            contrast = np.random.uniform(0.7, 1.3)
+            mean = np.mean(image)
+            image = cv2.convertScaleAbs(image, alpha=contrast, beta=(1-contrast)*mean)
+            
+        if np.random.random() > 0.5:
+            # Random saturation
+            image_hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+            saturation = np.random.uniform(0.7, 1.3)
+            image_hsv[:, :, 1] = cv2.convertScaleAbs(image_hsv[:, :, 1], alpha=saturation)
+            image = cv2.cvtColor(image_hsv, cv2.COLOR_HSV2RGB)
+            
         # Gaussian noise
         if np.random.random() > 0.5:
             noise = np.random.normal(0, 10, image.shape)
-            image = image + noise
-            
-        # Ensure valid image range
-        image = tf.clip_by_value(image, 0, 255)
+            image = np.clip(image + noise, 0, 255)
         
         return np.array(image), box
     
@@ -234,23 +239,3 @@ class WaldoDataset:
                 'boxes': np.stack(batch_boxes),
                 'scores': np.stack(batch_scores),
             }
-
-def create_tf_dataset(data_dir: str,
-                     split: str = 'train',
-                     batch_size: int = 16) -> tf.data.Dataset:
-    """Create a TensorFlow dataset for compatibility with existing pipelines."""
-    dataset = WaldoDataset(data_dir, batch_size=batch_size, augment=split=='train')
-    loader = dataset.train_loader() if split == 'train' else dataset.val_loader()
-    
-    def generator():
-        for batch in loader:
-            yield batch
-    
-    return tf.data.Dataset.from_generator(
-        generator,
-        output_signature={
-            'image': tf.TensorSpec(shape=(None, 640, 640, 3), dtype=tf.float32),
-            'boxes': tf.TensorSpec(shape=(None, 4), dtype=tf.float32),
-            'scores': tf.TensorSpec(shape=(None, 1), dtype=tf.float32),
-        }
-    ).prefetch(tf.data.AUTOTUNE)

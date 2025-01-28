@@ -1,6 +1,8 @@
-"""Advanced training script for Waldo detector with SOTA practices."""
+"""Training script for Waldo detector optimized for CPU."""
 
 import os
+os.environ['JAX_PLATFORMS'] = 'cpu'  # Force CPU-only mode before JAX import
+
 from pathlib import Path
 from typing import Dict, Any, Optional
 import hydra
@@ -50,14 +52,20 @@ def train(cfg: DictConfig) -> None:
     Args:
         cfg: Hydra configuration object
     """
-    # Enhanced wandb initialization with more metadata
-    wandb.init(
-        project="waldo-finder",
-        name=cfg.experiment_name,
-        config=dict(cfg),
-        tags=["SOTA", "ViT", "Object-Detection"],
-        notes="Advanced training with mixed precision, EMA, and gradient accumulation"
-    )
+    # Initialize wandb if available and not disabled
+    use_wandb = False
+    try:
+        if os.environ.get('WANDB_MODE') != 'disabled':
+            wandb.init(
+                project="waldo-finder",
+                name=cfg.experiment_name,
+                config=dict(cfg),
+                tags=["CPU-Training", "ViT", "Object-Detection"],
+                notes="CPU-optimized training configuration"
+            )
+            use_wandb = True
+    except:
+        print("Wandb not available, continuing without logging")
     
     # Set up data loaders
     train_dataset = WaldoDataset(
@@ -80,10 +88,8 @@ def train(cfg: DictConfig) -> None:
     rng, init_rng = jax.random.split(rng)
     
     print("2/5: Creating initial state...")
-    # Calculate training parameters with multiple passes per epoch
-    base_steps = len(train_dataset.annotations) // cfg.training.batch_size
-    passes_per_epoch = 4  # Multiple passes over dataset per epoch
-    steps_per_epoch = base_steps * passes_per_epoch
+    # Calculate training parameters with single pass per epoch
+    steps_per_epoch = len(train_dataset.annotations) // cfg.training.batch_size
     num_train_steps = steps_per_epoch * cfg.training.num_epochs
     warmup_steps = steps_per_epoch * cfg.training.warmup_epochs
     
@@ -212,12 +218,13 @@ def train(cfg: DictConfig) -> None:
             for k in val_metrics[0].keys()
         }
         
-        # Log metrics
-        wandb.log({
-            'epoch': epoch + 1,
-            **train_epoch_metrics,
-            **val_epoch_metrics,
-        })
+        # Log metrics if wandb is available
+        if use_wandb:
+            wandb.log({
+                'epoch': epoch + 1,
+                **train_epoch_metrics,
+                **val_epoch_metrics,
+            })
         
         # Check early stopping
         if early_stopping(val_epoch_metrics['val_loss']):
@@ -242,38 +249,40 @@ def train(cfg: DictConfig) -> None:
                     'epoch': epoch,
                     'best_val_loss': best_val_loss,
                     'dynamic_scale': dynamic_scale.state_dict() if dynamic_scale else None,
-                    'ema_params': to_bytes(ema_params) if ema is not None else None,
+                    'ema_params': to_bytes(ema_params) if ema_update is not None else None,
                 }
             }
             
             with open(model_dir / 'model.pkl', 'wb') as f:
                 pickle.dump(save_dict, f)
             
-            # Enhanced wandb artifact logging
-            artifact = wandb.Artifact(
-                name=f"{cfg.experiment_name}-model",
-                type="model",
-                description=f"Best model checkpoint (val_loss: {best_val_loss:.4f})"
-            )
-            artifact.metadata = {
-                'epoch': epoch + 1,
-                'val_loss': float(best_val_loss),
-                'train_loss': float(train_epoch_metrics['loss']),
-                'architecture': {
-                    'num_layers': cfg.model.num_layers,
-                    'hidden_dim': cfg.model.hidden_dim,
-                    'num_heads': cfg.model.num_heads,
+            # Log artifacts if wandb is available
+            if use_wandb:
+                artifact = wandb.Artifact(
+                    name=f"{cfg.experiment_name}-model",
+                    type="model",
+                    description=f"Best model checkpoint (val_loss: {best_val_loss:.4f})"
+                )
+                artifact.metadata = {
+                    'epoch': epoch + 1,
+                    'val_loss': float(best_val_loss),
+                    'train_loss': float(train_epoch_metrics['loss']),
+                    'architecture': {
+                        'num_layers': cfg.model.num_layers,
+                        'hidden_dim': cfg.model.hidden_dim,
+                        'num_heads': cfg.model.num_heads,
+                    }
                 }
-            }
-            artifact.add_file(str(model_dir / 'model.pkl'))
-            wandb.log_artifact(artifact)
+                artifact.add_file(str(model_dir / 'model.pkl'))
+                wandb.log_artifact(artifact)
         
         print(f"Epoch {epoch+1}")
         print(f"Train Loss: {train_epoch_metrics['loss']:.4f}")
         print(f"Val Loss: {val_epoch_metrics['val_loss']:.4f}")
         print(f"Best Val Loss: {best_val_loss:.4f}")
     
-    wandb.finish()
+    if use_wandb:
+        wandb.finish()
 
 if __name__ == '__main__':
     train()

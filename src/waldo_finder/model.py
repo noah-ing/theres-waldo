@@ -44,16 +44,16 @@ class DropPath(nn.Module):
         return StochasticDepth(rate=self.rate)(x, deterministic=deterministic)
 
 class WaldoDetector(nn.Module):
-    """State-of-the-art JAX-based Waldo detector using enhanced Vision Transformer with modern techniques."""
+    """CPU-optimized JAX-based Waldo detector using simplified Vision Transformer."""
     
-    num_heads: int = 12
-    num_layers: int = 12
-    hidden_dim: int = 768
-    mlp_dim: int = 3072
-    dropout_rate: float = 0.2
-    drop_path_rate: float = 0.2
+    num_heads: int = 8
+    num_layers: int = 8
+    hidden_dim: int = 512
+    mlp_dim: int = 2048
+    dropout_rate: float = 0.1
+    drop_path_rate: float = 0.0  # Disabled for CPU
     attention_dropout_rate: float = 0.1
-    stochastic_depth_rate: float = 0.1
+    stochastic_depth_rate: float = 0.0  # Disabled for CPU
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> Dict[str, jnp.ndarray]:
@@ -96,30 +96,20 @@ class WaldoDetector(nn.Module):
         drop_path_rates = jnp.linspace(0, self.drop_path_rate, self.num_layers)
         
         for i in range(self.num_layers):
-            # Multi-head self-attention with relative position bias
+            # Simplified multi-head self-attention
             y = nn.LayerNorm(epsilon=1e-6)(x)
             y = nn.MultiHeadDotProductAttention(
                 num_heads=self.num_heads,
                 dropout_rate=self.attention_dropout_rate if training else 0.0,
                 deterministic=not training,
-                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
             )(y, y)
             y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not training)
-            y = DropPath(rate=drop_path_rates[i])(y, deterministic=not training)
             x = x + y
             
-            # Enhanced MLP block with SwiGLU activation
+            # Simplified MLP block with GELU activation
             y = nn.LayerNorm(epsilon=1e-6)(x)
-            features = self.mlp_dim
-            y1 = nn.Dense(
-                features, 
-                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
-            )(y)
-            y2 = nn.Dense(
-                features, 
-                kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal'),
-            )(y)
-            y = y1 * jax.nn.swish(y2)  # SwiGLU activation
+            y = nn.Dense(self.mlp_dim)(y)
+            y = nn.gelu(y)
             y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not training)
             y = nn.Dense(
                 self.hidden_dim,
@@ -135,27 +125,24 @@ class WaldoDetector(nn.Module):
         # Advanced detection heads with deeper architecture
         x = nn.LayerNorm(epsilon=1e-6, name='final_norm')(x)
         
-        # Box prediction head with deeper network
+        # Advanced box prediction head with proper coordinate ordering
         boxes = nn.Sequential([
-            nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.Dense(256),
             nn.gelu,
-            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
-            nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
-            nn.gelu,
-            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
-            nn.Dense(4, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
-            nn.sigmoid,  # Normalize coordinates to [0,1]
+            nn.Dense(4),
         ], name='box_head')(x)
         
-        # Score prediction head with deeper network
+        # Split coordinates and enforce ordering
+        x1y1, x2y2 = jnp.split(boxes, 2, axis=-1)
+        x1y1 = jax.nn.sigmoid(x1y1)  # Bound to [0,1]
+        x2y2 = x1y1 + jax.nn.sigmoid(x2y2)  # Ensure x2>x1, y2>y1
+        boxes = jnp.concatenate([x1y1, x2y2], axis=-1)
+        
+        # Simplified score prediction head
         scores = nn.Sequential([
-            nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.Dense(256),
             nn.gelu,
-            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
-            nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
-            nn.gelu,
-            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
-            nn.Dense(1, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
+            nn.Dense(1),
             nn.sigmoid,
         ], name='score_head')(x)
         
