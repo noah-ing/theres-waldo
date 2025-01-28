@@ -133,10 +133,10 @@ class WaldoDetector(nn.Module):
         boxes = nn.Sequential([
             nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.gelu,
-            nn.Dropout(rate=0.1),
+            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
             nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.gelu,
-            nn.Dropout(rate=0.1),
+            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
             nn.Dense(4, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.sigmoid,  # Normalize coordinates to [0,1]
         ], name='box_head')(x)
@@ -145,10 +145,10 @@ class WaldoDetector(nn.Module):
         scores = nn.Sequential([
             nn.Dense(512, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.gelu,
-            nn.Dropout(rate=0.1),
+            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
             nn.Dense(256, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.gelu,
-            nn.Dropout(rate=0.1),
+            lambda x: nn.Dropout(rate=0.1)(x, deterministic=not training),
             nn.Dense(1, kernel_init=nn.initializers.variance_scaling(0.02, 'fan_in', 'truncated_normal')),
             nn.sigmoid,
         ], name='score_head')(x)
