@@ -1,10 +1,10 @@
 # Core ML dependencies
-jax>=0.4.20
+numpy>=1.26.0,<2.1.0  # Compatible with JAX
+scipy>=1.11.3  # Compatible with numpy
+jax[cpu]>=0.4.20  # CPU-only version
 jaxlib>=0.4.20
-flax>=0.7.5  # JAX-based neural network library
-optax>=0.1.7  # JAX optimization library
-tensorflow>=2.15.0  # For dataset handling and compatibility
-tensorflow-datasets>=4.9.3
+flax>=0.7.5  # Updated version for Python 3.12 compatibility
+optax>=0.1.7  # Updated version for Python 3.12 compatibility
 
 # Computer Vision
 opencv-python>=4.8.1
@@ -21,3 +21,5 @@ pytest>=7.4.3  # For testing
 black>=23.12.1  # For code formatting
 isort>=5.13.2  # For import sorting
 mypy>=1.8.0  # For type checking
+tqdm>=4.66.1  # For progress bars
+pandas>=2.1.4  # For data loading

@@ -23,47 +23,23 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
-env/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-.project
-.pydevproject
-.settings/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Training
+# Project specific
 outputs/
+trained_model/
+models/
 wandb/
-*.pkl
-*.ckpt
-*.pth
-*.h5
 
-# Data
-*.tfrecord
-*.record
-*.zip
-*.tar.gz
+# Memory Bank (never commit to git)
+cline_docs/
 
-# Logs
-*.log
-logs/
-tensorboard/
-
-# OS
+# Misc
 .DS_Store
-Thumbs.db
-
-# Environment variables
 .env
-.env.*
-
-# Model checkpoints (except our trained model)
-models/*
-!models/best_model.pkl
+*.log

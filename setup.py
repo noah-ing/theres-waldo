@@ -26,12 +26,10 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "jax>=0.4.20",
+        "jax[cpu]>=0.4.20",
         "jaxlib>=0.4.20",
         "flax>=0.7.5",
         "optax>=0.1.7",
-        "tensorflow>=2.15.0",
-        "tensorflow-datasets>=4.9.3",
         "opencv-python>=4.8.1",
         "Pillow>=10.1.0",
         "matplotlib>=3.8.2",

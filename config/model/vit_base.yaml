@@ -1,53 +1,53 @@
-# Vision Transformer large configuration with advanced techniques
+# Vision Transformer configuration optimized for CPU training
 model:
-  # Architecture parameters - increased capacity for SOTA performance
-  num_heads: 12
-  num_layers: 12
-  hidden_dim: 768
-  mlp_dim: 3072
-  dropout_rate: 0.2
+  # Reduced architecture for CPU feasibility
+  num_heads: 8
+  num_layers: 8
+  hidden_dim: 512
+  mlp_dim: 2048
+  dropout_rate: 0.2  # Increased dropout
   
-  # Advanced training parameters
-  weight_decay: 0.05
-  warmup_steps: 2000
+  # Basic training parameters
+  weight_decay: 0.1  # Increased weight decay
+  warmup_steps: 100
   max_grad_norm: 1.0
-  gradient_checkpointing: true  # Enable for memory efficiency
+  gradient_checkpointing: false  # Disabled for CPU
   
-  # Advanced regularization techniques
+  # Enhanced regularization for small dataset
   label_smoothing: 0.1
-  mixup_alpha: 0.8
-  cutmix_alpha: 1.0
-  drop_path_rate: 0.2
+  mixup_alpha: 0.2
+  cutmix_alpha: 0.2
+  drop_path_rate: 0.1
   stochastic_depth_rate: 0.1
   
-  # Sophisticated optimization
+  # Standard optimizer configuration
   optimizer:
-    type: lion  # Advanced optimizer
+    type: adamw  # Standard optimizer with better CPU support
     beta1: 0.9
-    beta2: 0.99
+    beta2: 0.999
     epsilon: 1.0e-8
     
-  # Cyclic learning rate schedule with warmup
+  # Simple learning rate schedule
   lr_schedule:
-    warmup_steps: 2000
-    decay_steps: 100000
-    min_lr_ratio: 0.001
-    cycles: 3  # Multiple cycles for better convergence
+    warmup_steps: 100
+    decay_steps: 10000
+    min_lr_ratio: 0.01
+    cycles: 1  # Single cycle for simplicity
     
-  # Advanced data augmentation pipeline
+  # Enhanced data augmentation for small dataset
   augmentation:
     random_flip: true
-    random_rotation: 15  # Degrees
-    random_scale: [0.8, 1.2]
-    random_shear: 10  # Degrees
+    random_rotation: 30  # Increased rotation range
+    random_scale: [0.8, 1.2]  # Increased scale range
+    random_shear: 10  # Enabled shear
     color_jitter:
-      brightness: 0.5
-      contrast: 0.5
-      saturation: 0.5
+      brightness: 0.4
+      contrast: 0.4
+      saturation: 0.4
       hue: 0.2
-    random_erasing: 0.25
-    auto_augment: true  # Use AutoAugment policy
-    trivial_augment: true  # Use TrivialAugment
-    random_augment:  # RandAugment
+    random_erasing: 0.2  # Enabled random erasing
+    auto_augment: true  # Enabled auto augment
+    trivial_augment: true  # Enabled trivial augment
+    random_augment:  # Enabled random augment
       num_ops: 2
-      magnitude: 9
+      magnitude: 10

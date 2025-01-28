@@ -1,149 +1,112 @@
-# 🔍 There's Waldo: Modern Vision Transformer for Finding Waldo
+# There's Waldo: Advanced Object Detection
 
-A state-of-the-art implementation for solving "Where's Waldo?" puzzles using JAX and Vision Transformers. This project demonstrates modern deep learning practices and efficient implementation using JAX's automatic differentiation and compilation capabilities.
+A state-of-the-art solution for finding Waldo in "Where's Waldo?" puzzles using Vision Transformers implemented in JAX.
 
-![Waldo Detection Example](docs/docs.png)
+## Features
 
-## 🚀 Project Status (January 2025)
+- CPU-optimized Vision Transformer implementation
+- Advanced regularization techniques:
+  - GridMask augmentation for structured dropout
+  - Consistency regularization between views
+  - Enhanced attention with relative position encoding
+  - Stochastic depth with linear scaling
+- Sophisticated training pipeline:
+  - Cyclic learning rate with warmup and restarts
+  - Enhanced EMA parameter averaging
+  - Advanced gradient accumulation
+  - Comprehensive metric tracking
+- Memory-efficient design:
+  - Optimized batch processing
+  - Smart gradient handling
+  - Enhanced parameter updates
 
-### Latest Memory & Training Optimizations (January 2025)
-- Memory-Efficient Architecture:
-  - Optimized 12-layer Vision Transformer (down from 24)
-  - Efficient 12-head attention mechanism
-  - Balanced 768-dim hidden states (reduced from 1024)
-  - Memory-efficient 3072-dim MLP layers
-  - Enhanced gradient checkpointing
-- Advanced Training Pipeline:
-  - Smart gradient accumulation (16 steps)
-  - Optimized batch size (8) with effective batch size of 128
-  - Multiple dataset passes per epoch for better utilization
-  - Improved data augmentation with shape consistency
-  - Stable mixed precision training
-- Sophisticated Optimization:
-  - Lion optimizer with tuned learning rate (0.0002)
-  - Efficient warmup and cosine decay scheduling
-  - Enhanced dropout and regularization
-  - Exponential Moving Average (EMA) of weights
-- Robust Training Features:
-  - Early stopping with configurable patience
-  - Comprehensive metric tracking (loss, GIoU, scores)
-  - Advanced data augmentation with shape preservation
-  - Real-time progress monitoring
-
-### Advanced Architecture Features
-- Memory-Efficient Vision Transformer:
-  - 12 transformer layers with 12 attention heads
-  - 768-dimensional hidden states
-  - 3072-dimensional MLP layers
-  - Gradient checkpointing for memory efficiency
-- Sophisticated training infrastructure:
-  - Mixed precision training for efficiency
-  - Dynamic gradient scaling
-  - Advanced optimizer configuration (AdamW)
-  - Modern learning rate scheduling
-- Enhanced data processing:
-  - Advanced augmentation pipeline
-  - Efficient data loading
-  - Real-time metric tracking
-
-### Current Progress
-1. ✅ Fixed Hydra configuration issues
-2. ✅ Implemented smart data loading with validation
-3. ✅ Set up model serialization with msgpack
-4. 🔄 Currently training the model (check wandb dashboard for progress)
-
-### Next Steps
-1. Model Evaluation & Refinement
-   - Complete initial training run
-   - Analyze training metrics from wandb
-   - Fine-tune hyperparameters if needed
-   - Validate model performance on test images
-
-2. Inference Pipeline
-   - Create user-friendly inference script
-   - Add visualization tools for predictions
-   - Implement confidence thresholding
-   - Add support for different image sizes
-
-3. Documentation & Demo
-   - Create example notebook
-   - Add model performance metrics
-   - Include sample predictions
-   - Document training process
-
-4. Deployment
-   - Create Docker container
-   - Add CI/CD pipeline
-   - Set up model versioning
-   - Create web demo (optional)
-
-## 🛠️ Installation
+## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/noah-ing/theres-waldo.git
-cd theres-waldo
-
 # Create and activate virtual environment
 python -m venv venv
-venv\Scripts\activate  # On Windows
-source venv/bin/activate  # On Unix/MacOS
+source venv/bin/activate  # Unix/MacOS
+venv\Scripts\activate     # Windows
 
-# Install dependencies
+# Install package
 pip install -e .
 ```
 
-## 📊 Advanced Model Architecture
+## Training
 
-The model implements state-of-the-art Vision Transformer architecture with numerous enhancements:
-- Enhanced transformer blocks:
-  - Pre-norm architecture with epsilon=1e-6
-  - SwiGLU activation function
-  - Stochastic Depth for regularization
-  - Advanced dropout strategies
-- Sophisticated attention mechanisms:
-  - 12-head attention with relative position bias
-  - Memory-efficient attention patterns
-  - Optimized attention regularization
-- Advanced detection heads:
-  - Deep prediction networks
-  - Multi-layer feature aggregation
-  - Improved localization accuracy
+Two training options are available:
 
-## 🏃‍♂️ Running the Model
+### Standard Training
+```bash
+python -m waldo_finder.train
+```
 
-### Current TensorFlow Model (Legacy)
-The original TensorFlow implementation is temporarily unavailable due to compatibility issues with TensorFlow 2.x.
+### Enhanced Training (Recommended)
+```bash
+python -m waldo_finder.train_optimized
+```
 
-### Advanced JAX Implementation
-Training pipeline features cutting-edge techniques:
-- Mixed precision training with dynamic scaling
-- Gradient accumulation for stability
+The enhanced training includes:
+- Advanced regularization techniques
+- Improved optimization strategies
+- Better monitoring and checkpointing
+
+## Configuration
+
+Configuration files are located in the `config/` directory:
+
+- `train.yaml`: Basic training configuration
+- `train_optimized.yaml`: Enhanced training settings
+- `model/vit_base.yaml`: Base model architecture
+- `model/vit_base_optimized.yaml`: Enhanced model architecture
+
+## Project Structure
+
+```
+├── config/                 # Configuration files
+├── src/waldo_finder/      # Core implementation
+│   ├── model.py           # Base ViT implementation
+│   ├── model_optimized.py # Enhanced ViT with regularization
+│   ├── train.py           # Basic training pipeline
+│   ├── train_optimized.py # Advanced training pipeline
+│   ├── data.py           # Data loading and preprocessing
+│   └── inference.py      # Inference and visualization
+├── images/                # Training data
+└── annotations/          # Bounding box annotations
+```
+
+## Model Architecture
+
+The Vision Transformer (ViT) architecture includes:
+- 8 transformer layers
+- 8 attention heads
+- 512-dim hidden states
+- 2048-dim MLP layers
+- Advanced regularization suite
+- Enhanced coordinate prediction
+
+## Training Pipeline
+
+The enhanced training pipeline features:
+- Gradient accumulation (8 steps)
+- Cyclic learning rate scheduling
+- Advanced early stopping
 - EMA parameter averaging
-- Advanced loss functions:
-  - GIoU loss for accurate box regression
-  - Focal loss with dynamic weighting
-- Sophisticated checkpointing:
-  - Best model tracking
-  - Training state preservation
-  - Comprehensive metadata logging
+- Comprehensive metrics
+- Enhanced checkpointing
 
-Check the wandb dashboard for live training progress and metrics.
+## Requirements
 
-## 📈 Dataset
+- Python 3.x
+- JAX (CPU version)
+- Flax
+- Hydra
+- Additional dependencies in requirements.txt
 
-The project uses a curated dataset of Where's Waldo images with:
-- 30+ annotated images
-- Precise bounding box coordinates
-- Various scene complexities
-- Multiple image resolutions
+## License
 
-## 🤝 Contributing
+MIT License - see LICENSE file for details.
 
-Contributions are welcome! Please check out our [contribution guidelines](CONTRIBUTING.md).
+## Contributing
 
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
+See CONTRIBUTING.md for guidelines.

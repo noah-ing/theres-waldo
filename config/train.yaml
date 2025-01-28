@@ -16,27 +16,27 @@ data:
 
 # Advanced training settings
 training:
-  batch_size: 8  # Reduced batch size for better memory efficiency
-  num_epochs: 100  # Reduced epochs for small dataset
+  batch_size: 2  # Smaller batch size for more frequent updates
+  num_epochs: 50  # Reduced epochs since we have small dataset
   steps_per_epoch: null  # Dynamic steps based on dataset
-  learning_rate: 0.0002  # Increased learning rate for faster convergence
+  learning_rate: 0.001  # Increased learning rate for better optimization
   seed: ${seed}
   model_dir: ${hydra:runtime.output_dir}/models
-  warmup_epochs: 3  # Reduced warmup for small dataset
+  warmup_epochs: 3  # Shorter warmup for small dataset
   
   # Advanced training features
-  gradient_accumulation_steps: 16  # Increased for effective batch size of 128
-  mixed_precision: true  # Use mixed precision training
-  gradient_checkpointing: true  # Save memory
+  gradient_accumulation_steps: 4  # Reduced accumulation for more frequent updates
+  mixed_precision: false  # Disabled for CPU training
+  gradient_checkpointing: false  # Disabled for CPU training
   ema: true  # Use exponential moving average of weights
-  ema_decay: 0.9999
+  ema_decay: 0.9995  # Adjusted for better stability
   
   # Advanced evaluation
   eval_freq: 1  # Evaluate every epoch
   save_best_only: true
   early_stopping:
-    patience: 20
-    min_delta: 0.0001
+    patience: 5  # Reduced patience since we expect faster convergence
+    min_delta: 0.001  # Increased min delta to avoid overfitting
     
   # Multi-GPU training settings
   sync_bn: true  # Sync batch norm stats across GPUs

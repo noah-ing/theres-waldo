@@ -132,10 +132,15 @@ class WaldoDetector(nn.Module):
             nn.Dense(4),
         ], name='box_head')(x)
         
-        # Split coordinates and enforce ordering
+        # Split coordinates and enforce ordering with proper normalization
         x1y1, x2y2 = jnp.split(boxes, 2, axis=-1)
         x1y1 = jax.nn.sigmoid(x1y1)  # Bound to [0,1]
-        x2y2 = x1y1 + jax.nn.sigmoid(x2y2)  # Ensure x2>x1, y2>y1
+        
+        # Compute relative offset and scale it to ensure x2,y2 stay in [0,1]
+        # Use sigmoid and multiply by (1-x1y1) to ensure the offset keeps x2,y2 <= 1
+        relative_offset = jax.nn.sigmoid(x2y2) * (1 - x1y1)
+        x2y2 = x1y1 + relative_offset  # Now guaranteed to be in [x1y1, 1]
+        
         boxes = jnp.concatenate([x1y1, x2y2], axis=-1)
         
         # Simplified score prediction head
@@ -255,44 +260,41 @@ def compute_loss(params: Dict,
 def generalized_box_iou_loss(pred_boxes: jnp.ndarray,
                             true_boxes: jnp.ndarray) -> jnp.ndarray:
     """Computes the GIoU loss between predicted and ground truth boxes."""
-    # Convert boxes from (x1,y1,x2,y2) format to (x,y,w,h)
-    pred_centers = (pred_boxes[..., :2] + pred_boxes[..., 2:]) / 2
-    pred_sizes = pred_boxes[..., 2:] - pred_boxes[..., :2]
+    # Work directly with corner coordinates for more stable gradients
+    pred_mins = pred_boxes[..., :2]
+    pred_maxs = pred_boxes[..., 2:]
+    true_mins = true_boxes[..., :2]
+    true_maxs = true_boxes[..., 2:]
     
-    true_centers = (true_boxes[..., :2] + true_boxes[..., 2:]) / 2
-    true_sizes = true_boxes[..., 2:] - true_boxes[..., :2]
+    # Compute intersection
+    intersect_mins = jnp.maximum(pred_mins[..., None, :], true_mins)
+    intersect_maxs = jnp.minimum(pred_maxs[..., None, :], true_maxs)
+    intersect_wh = jnp.maximum(intersect_maxs - intersect_mins, 0.0)
+    intersect_area = jnp.prod(intersect_wh, axis=-1)
+    
+    # Compute areas
+    pred_wh = jnp.maximum(pred_maxs - pred_mins, 0.0)
+    true_wh = jnp.maximum(true_maxs - true_mins, 0.0)
+    pred_area = jnp.prod(pred_wh, axis=-1)
+    true_area = jnp.prod(true_wh, axis=-1)
     
     # Compute IoU
-    intersect_sizes = jnp.minimum(
-        pred_centers[..., None, :] + pred_sizes[..., None, :] / 2,
-        true_centers + true_sizes / 2
-    ) - jnp.maximum(
-        pred_centers[..., None, :] - pred_sizes[..., None, :] / 2,
-        true_centers - true_sizes / 2
-    )
-    
-    intersect_area = jnp.prod(jnp.maximum(intersect_sizes, 0), axis=-1)
-    pred_area = jnp.prod(pred_sizes, axis=-1)
-    true_area = jnp.prod(true_sizes, axis=-1)
     union_area = pred_area[..., None] + true_area - intersect_area
-    
     iou = intersect_area / (union_area + 1e-6)
     
     # Compute enclosing box
-    enclose_sizes = jnp.maximum(
-        pred_centers[..., None, :] + pred_sizes[..., None, :] / 2,
-        true_centers + true_sizes / 2
-    ) - jnp.minimum(
-        pred_centers[..., None, :] - pred_sizes[..., None, :] / 2,
-        true_centers - true_sizes / 2
-    )
+    enclose_mins = jnp.minimum(pred_mins[..., None, :], true_mins)
+    enclose_maxs = jnp.maximum(pred_maxs[..., None, :], true_maxs)
+    enclose_wh = jnp.maximum(enclose_maxs - enclose_mins, 0.0)
+    enclose_area = jnp.prod(enclose_wh, axis=-1)
     
-    enclose_area = jnp.prod(enclose_sizes, axis=-1)
-    
-    # Compute GIoU
+    # Compute GIoU with better numerical stability
     giou = iou - (enclose_area - union_area) / (enclose_area + 1e-6)
     
-    return 1 - giou
+    # Add L1 loss component for better gradient flow
+    l1_loss = jnp.mean(jnp.abs(pred_boxes - true_boxes), axis=-1)
+    
+    return (1 - giou) + 0.1 * l1_loss
 
 def sigmoid_focal_loss(pred: jnp.ndarray,
                       target: jnp.ndarray,

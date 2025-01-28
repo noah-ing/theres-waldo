@@ -135,13 +135,8 @@ class WaldoFinder:
         # Model outputs normalized coordinates in [0,1]
         boxes = boxes.copy()
         
-        # Ensure x1 < x2 and y1 < y2
-        boxes = np.stack([
-            np.minimum(boxes[:, 0], boxes[:, 2]),  # x1
-            np.minimum(boxes[:, 1], boxes[:, 3]),  # y1
-            np.maximum(boxes[:, 0], boxes[:, 2]),  # x2
-            np.maximum(boxes[:, 1], boxes[:, 3]),  # y2
-        ], axis=1)
+        # Model now guarantees x1<x2, y1<y2 through its architecture
+        # No need to reorder coordinates
         
         # Denormalize to padded image size
         boxes = boxes * 640
@@ -175,9 +170,15 @@ class WaldoFinder:
         # Run inference
         outputs = self.predict_fn(processed)
         
-        # Print raw outputs for debugging
-        print(f"Raw boxes: {outputs['boxes'][0]}")
-        print(f"Raw scores: {outputs['scores'][0]}")
+        # Print detailed debug info
+        boxes = outputs['boxes'][0]
+        scores = outputs['scores'][0]
+        print("\nRaw Detection Results:")
+        print(f"Coordinates (normalized):")
+        print(f"  x1, y1: ({boxes[0,0]:.3f}, {boxes[0,1]:.3f})")
+        print(f"  x2, y2: ({boxes[0,2]:.3f}, {boxes[0,3]:.3f})")
+        print(f"Box size: {boxes[0,2]-boxes[0,0]:.3f} x {boxes[0,3]-boxes[0,1]:.3f}")
+        print(f"Confidence: {scores[0,0]:.3%}")
         
         # Postprocess
         boxes, scores = self._postprocess_boxes(
