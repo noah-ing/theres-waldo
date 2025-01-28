@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from tqdm.auto import tqdm
 import numpy as np
 from flax.training import dynamic_scale as dynamic_scale_lib
-from flax.training.ema import ExponentialMovingAverage
+from flax.training import common_utils
 
 from waldo_finder.model import (
     create_train_state,
@@ -109,13 +109,15 @@ def train(cfg: DictConfig) -> None:
         dynamic_scale = None
     
     if cfg.training.ema:
-        ema = ExponentialMovingAverage(
-            decay=cfg.training.ema_decay,
-            dtype=jnp.float32
-        )
-        ema_params = ema.initialize(state.params)
+        ema_decay = cfg.training.ema_decay
+        def ema_update(params, new_params):
+            return jax.tree_map(
+                lambda p1, p2: p1 * ema_decay + (1 - ema_decay) * p2,
+                params, new_params
+            )
+        ema_params = state.params
     else:
-        ema = None
+        ema_update = None
         ema_params = None
     
     early_stopping = EarlyStopping(
@@ -149,8 +151,8 @@ def train(cfg: DictConfig) -> None:
                 state, metrics = train_step(state, batch, step_rng)
             
             # Update EMA parameters
-            if ema is not None and (step + 1) % grad_accumulation_steps == 0:
-                ema_params = ema.update_moving_average(ema_params, state.params)
+            if ema_update is not None and (step + 1) % grad_accumulation_steps == 0:
+                ema_params = ema_update(ema_params, state.params)
             
             train_metrics.append(metrics)
             
@@ -174,7 +176,7 @@ def train(cfg: DictConfig) -> None:
         
         # Enhanced validation with EMA if enabled
         val_metrics = []
-        eval_params = ema_params if ema is not None else state.params
+        eval_params = ema_params if ema_update is not None else state.params
         
         for batch in val_dataset.val_loader():
             outputs = eval_step(state.replace(params=eval_params), batch)
