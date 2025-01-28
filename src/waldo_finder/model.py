@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 from flax.training import train_state
+from flax.training import dynamic_scale as dynamic_scale_lib
 import optax
 
 class BoundingBox(NamedTuple):
