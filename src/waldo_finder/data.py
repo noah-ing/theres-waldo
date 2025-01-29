@@ -174,40 +174,33 @@ class WaldoDataset:
     def _prepare_sample(self, 
                        image_path: str,
                        boxes: np.ndarray) -> Dict[str, np.ndarray]:
-        """Prepare a single sample with multiple boxes."""
+        """Prepare a single sample with single box (first Waldo)."""
         # Load and preprocess image
         image = self._load_image(image_path)
         
-        # Handle multiple boxes
-        processed_boxes = []
-        for box in boxes:
-            # Resize and normalize box coordinates
-            _, box = self._resize_with_aspect_ratio(image, box)
-            processed_boxes.append(box)
+        # Take first box only
+        box = boxes[0]  # Use first Waldo in case of multiple
         
-        # Stack boxes
-        boxes = np.stack(processed_boxes)
+        # Resize and normalize coordinates
+        image, box = self._resize_with_aspect_ratio(image, box)
         
-        # Resize image once
-        image, _ = self._resize_with_aspect_ratio(image, boxes[0])
+        # Apply augmentations
+        image, box = self._apply_augmentations(image, box)
         
-        # Apply augmentations (will handle all boxes)
-        image, boxes = self._apply_augmentations(image, boxes)
-        
-        # Convert boxes to center-size format
-        center_size_boxes = np.array([self._convert_to_center_size(box) for box in boxes])
+        # Convert box to center-size format
+        box = self._convert_to_center_size(box)
         
         # Normalize image to [0, 1]
         image = image.astype(np.float32) / 255.0
         
         return {
             'image': image,
-            'boxes': center_size_boxes.astype(np.float32),
-            'scores': np.ones(len(boxes), dtype=np.float32),  # Ground truth scores
+            'boxes': box.astype(np.float32),  # Single box
+            'scores': np.array([1.0], dtype=np.float32),  # Single score
         }
     
     def train_loader(self) -> Iterator[Dict[str, np.ndarray]]:
-        """Create training data loader with multi-box support."""
+        """Create training data loader for single box detection."""
         while True:
             # Group annotations by image
             grouped = self.annotations.groupby('filename')
@@ -220,11 +213,11 @@ class WaldoDataset:
             batch_scores = []
             
             for image_name in image_names:
-                # Get all boxes for this image
+                # Get boxes for this image
                 image_annots = grouped.get_group(image_name)
                 boxes = image_annots[['xmin', 'ymin', 'xmax', 'ymax']].values
                 
-                # Prepare sample with all boxes
+                # Prepare sample with first box
                 sample = self._prepare_sample(image_name, boxes)
                 
                 batch_images.append(sample['image'])
@@ -232,33 +225,17 @@ class WaldoDataset:
                 batch_scores.append(sample['scores'])
                 
                 if len(batch_images) == self.batch_size:
-                    # Pad boxes to same length within batch
-                    max_boxes = max(boxes.shape[0] for boxes in batch_boxes)
-                    padded_boxes = []
-                    padded_scores = []
-                    
-                    for boxes, scores in zip(batch_boxes, batch_scores):
-                        if boxes.shape[0] < max_boxes:
-                            # Pad with zeros and set corresponding scores to 0
-                            pad_boxes = np.zeros((max_boxes - boxes.shape[0], 4))
-                            pad_scores = np.zeros(max_boxes - boxes.shape[0])  # Remove extra dimension
-                            boxes = np.vstack([boxes, pad_boxes])
-                            scores = np.concatenate([scores, pad_scores])  # Keep scores 1D
-                        # No reshaping needed for scores
-                        padded_boxes.append(boxes)
-                        padded_scores.append(scores)
-                    
                     yield {
                         'image': np.stack(batch_images),
-                        'boxes': np.stack(padded_boxes),
-                        'scores': np.stack(padded_scores),  # Shape: [batch_size, max_boxes]
+                        'boxes': np.stack(batch_boxes),  # Shape: [batch_size, 4]
+                        'scores': np.stack(batch_scores),  # Shape: [batch_size, 1]
                     }
                     batch_images = []
                     batch_boxes = []
                     batch_scores = []
     
     def val_loader(self) -> Iterator[Dict[str, np.ndarray]]:
-        """Create validation data loader with multi-box support."""
+        """Create validation data loader for single box detection."""
         # Group annotations by image
         grouped = self.annotations.groupby('filename')
         
@@ -276,11 +253,11 @@ class WaldoDataset:
         batch_scores = []
         
         for image_name in val_images:
-            # Get all boxes for this image
+            # Get boxes for this image
             image_annots = grouped.get_group(image_name)
             boxes = image_annots[['xmin', 'ymin', 'xmax', 'ymax']].values
             
-            # Prepare sample with all boxes
+            # Prepare sample with first box
             sample = self._prepare_sample(image_name, boxes)
             
             batch_images.append(sample['image'])
@@ -288,25 +265,10 @@ class WaldoDataset:
             batch_scores.append(sample['scores'])
             
             if len(batch_images) == self.batch_size:
-                # Pad boxes to same length within batch
-                max_boxes = max(boxes.shape[0] for boxes in batch_boxes)
-                padded_boxes = []
-                padded_scores = []
-                
-                for boxes, scores in zip(batch_boxes, batch_scores):
-                    if boxes.shape[0] < max_boxes:
-                        pad_boxes = np.zeros((max_boxes - boxes.shape[0], 4))
-                        pad_scores = np.zeros(max_boxes - boxes.shape[0])  # Remove extra dimension
-                        boxes = np.vstack([boxes, pad_boxes])
-                        scores = np.concatenate([scores, pad_scores])  # Keep scores 1D
-                    # No reshaping needed for scores
-                    padded_boxes.append(boxes)
-                    padded_scores.append(scores)
-                
                 yield {
                     'image': np.stack(batch_images),
-                    'boxes': np.stack(padded_boxes),
-                    'scores': np.stack(padded_scores),  # Shape: [batch_size, max_boxes]
+                    'boxes': np.stack(batch_boxes),  # Shape: [batch_size, 4]
+                    'scores': np.stack(batch_scores),  # Shape: [batch_size, 1]
                 }
                 batch_images = []
                 batch_boxes = []
@@ -314,23 +276,8 @@ class WaldoDataset:
         
         # Return remaining samples
         if batch_images:
-            # Pad final batch
-            max_boxes = max(boxes.shape[0] for boxes in batch_boxes)
-            padded_boxes = []
-            padded_scores = []
-            
-            for boxes, scores in zip(batch_boxes, batch_scores):
-                if boxes.shape[0] < max_boxes:
-                    pad_boxes = np.zeros((max_boxes - boxes.shape[0], 4))
-                    pad_scores = np.zeros(max_boxes - boxes.shape[0])  # Remove extra dimension
-                    boxes = np.vstack([boxes, pad_boxes])
-                    scores = np.concatenate([scores, pad_scores])  # Keep scores 1D
-                # No reshaping needed for scores
-                padded_boxes.append(boxes)
-                padded_scores.append(scores)
-            
             yield {
                 'image': np.stack(batch_images),
-                'boxes': np.stack(padded_boxes),
-                'scores': np.stack(padded_scores),  # Shape: [batch_size, max_boxes]
+                'boxes': np.stack(batch_boxes),
+                'scores': np.stack(batch_scores),
             }

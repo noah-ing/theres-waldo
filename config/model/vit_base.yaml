@@ -1,53 +1,52 @@
 # Vision Transformer configuration optimized for CPU training
-model:
-  # Reduced architecture for CPU feasibility
-  num_heads: 8
-  num_layers: 8
-  hidden_dim: 512
-  mlp_dim: 2048
-  dropout_rate: 0.2  # Increased dropout
+# Reduced architecture for CPU feasibility
+num_heads: 8
+num_layers: 8
+hidden_dim: 512
+mlp_dim: 2048
+dropout_rate: 0.2  # Increased dropout
   
-  # Basic training parameters
-  weight_decay: 0.1  # Increased weight decay
+# Basic training parameters
+weight_decay: 0.1  # Increased weight decay
+warmup_steps: 100
+max_grad_norm: 1.0
+gradient_checkpointing: false  # Disabled for CPU
+  
+# Enhanced regularization for small dataset
+label_smoothing: 0.1
+mixup_alpha: 0.2
+cutmix_alpha: 0.2
+drop_path_rate: 0.1
+stochastic_depth_rate: 0.1
+  
+# Standard optimizer configuration
+optimizer:
+  type: adamw  # Standard optimizer with better CPU support
+  beta1: 0.9
+  beta2: 0.999
+  epsilon: 1.0e-8
+    
+# Simple learning rate schedule
+lr_schedule:
   warmup_steps: 100
-  max_grad_norm: 1.0
-  gradient_checkpointing: false  # Disabled for CPU
-  
-  # Enhanced regularization for small dataset
-  label_smoothing: 0.1
-  mixup_alpha: 0.2
-  cutmix_alpha: 0.2
-  drop_path_rate: 0.1
-  stochastic_depth_rate: 0.1
-  
-  # Standard optimizer configuration
-  optimizer:
-    type: adamw  # Standard optimizer with better CPU support
-    beta1: 0.9
-    beta2: 0.999
-    epsilon: 1.0e-8
+  decay_steps: 10000
+  min_lr_ratio: 0.01
+  cycles: 1  # Single cycle for simplicity
     
-  # Simple learning rate schedule
-  lr_schedule:
-    warmup_steps: 100
-    decay_steps: 10000
-    min_lr_ratio: 0.01
-    cycles: 1  # Single cycle for simplicity
-    
-  # Enhanced data augmentation for small dataset
-  augmentation:
-    random_flip: true
-    random_rotation: 30  # Increased rotation range
-    random_scale: [0.8, 1.2]  # Increased scale range
-    random_shear: 10  # Enabled shear
-    color_jitter:
-      brightness: 0.4
-      contrast: 0.4
-      saturation: 0.4
-      hue: 0.2
-    random_erasing: 0.2  # Enabled random erasing
-    auto_augment: true  # Enabled auto augment
-    trivial_augment: true  # Enabled trivial augment
-    random_augment:  # Enabled random augment
-      num_ops: 2
-      magnitude: 10
+# Enhanced data augmentation for small dataset
+augmentation:
+  random_flip: true
+  random_rotation: 30  # Increased rotation range
+  random_scale: [0.8, 1.2]  # Increased scale range
+  random_shear: 10  # Enabled shear
+  color_jitter:
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.2
+  random_erasing: 0.2  # Enabled random erasing
+  auto_augment: true  # Enabled auto augment
+  trivial_augment: true  # Enabled trivial augment
+  random_augment:  # Enabled random augment
+    num_ops: 2
+    magnitude: 10

@@ -198,19 +198,36 @@ def train(cfg: DictConfig) -> None:
             for k in train_metrics[0].keys()
         }
         
-        # Enhanced validation with EMA if enabled
+        # Enhanced validation with same metrics as training
         val_metrics = []
         eval_params = ema_params if ema_update is not None else state.params
         
         for batch in val_dataset.val_loader():
             outputs = eval_step(state.replace(params=eval_params), batch)
             
-            # Calculate comprehensive validation metrics
-            val_loss = jnp.mean(jnp.abs(outputs['boxes'] - batch['boxes']))
-            score_accuracy = jnp.mean(jnp.abs(outputs['scores'] - batch['scores']))
+            # Use same loss computation as training
+            from waldo_finder.model import generalized_box_iou_loss, sigmoid_focal_loss
+            
+            # Calculate GIoU loss
+            giou_loss = generalized_box_iou_loss(
+                outputs['boxes'],
+                batch['boxes']
+            ).mean()
+            
+            # Calculate score loss with focal loss
+            score_loss = sigmoid_focal_loss(
+                outputs['scores'],
+                batch['scores'],
+                alpha=0.25,
+                gamma=2.0
+            ).mean()
+            
+            total_loss = giou_loss + score_loss
+            
             val_metrics.append({
-                'val_loss': val_loss,
-                'val_score_accuracy': score_accuracy
+                'val_loss': total_loss,
+                'val_giou_loss': giou_loss,
+                'val_score_loss': score_loss
             })
         
         val_epoch_metrics = {

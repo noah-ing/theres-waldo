@@ -14,7 +14,7 @@ import pickle
 from flax.serialization import msgpack_restore
 import csv
 
-from waldo_finder.model_optimized import EnhancedWaldoDetector, create_optimized_train_state
+from waldo_finder.model import WaldoDetector, create_train_state
 
 class WaldoFinder:
     """Modern interface for Waldo detection."""
@@ -51,35 +51,26 @@ class WaldoFinder:
             
         self.model_path = Path(model_path)
         
-        # Initialize model with same config as training
-        self.model = EnhancedWaldoDetector(
+        # Initialize model with simpler config
+        self.model = WaldoDetector(
             num_heads=8,
             num_layers=8,
             hidden_dim=512,
             mlp_dim=2048,
-            dropout_rate=0.3,
-            attention_dropout=0.2,
-            path_dropout=0.2,
-            stochastic_depth_rate=0.2
+            dropout_rate=0.1
         )
 
-        # Create initial state to get expected structure
+        # Create initial state
         rng = jax.random.PRNGKey(0)
-        state = create_optimized_train_state(
+        state = create_train_state(
             rng,
             learning_rate=1e-4,  # Doesn't matter for inference
-            num_train_steps=1000,  # Dummy value for inference
             model_kwargs={
-                'model': {
-                    'num_heads': 8,
-                    'num_layers': 8,
-                    'hidden_dim': 512,
-                    'mlp_dim': 2048,
-                    'dropout_rate': 0.3,
-                    'attention_dropout': 0.2,
-                    'path_dropout': 0.2,
-                    'stochastic_depth_rate': 0.2
-                }
+                'num_heads': 8,
+                'num_layers': 8,
+                'hidden_dim': 512,
+                'mlp_dim': 2048,
+                'dropout_rate': 0.1
             }
         )
         
@@ -88,22 +79,11 @@ class WaldoFinder:
             with open(self.model_path, 'rb') as f:
                 save_dict = pickle.load(f)
                 
-                # Print debug info about saved parameters
-                print("\nModel checkpoint info:")
-                print(f"Keys in save_dict: {list(save_dict.keys())}")
-                
-                # Properly handle parameter deserialization
+                # Deserialize parameters
                 if isinstance(save_dict['params'], bytes):
-                    try:
-                        params = msgpack_restore(save_dict['params'])
-                    except Exception as e:
-                        print(f"Error deserializing params: {e}")
-                        raise
+                    params = msgpack_restore(save_dict['params'])
                 else:
                     params = save_dict['params']
-                
-                # Print parameter structure
-                print(f"Parameter structure: {jax.tree_util.tree_structure(params)}")
                 
                 self.variables = {'params': params}
                 
@@ -166,9 +146,7 @@ class WaldoFinder:
             self.variables,
             image[None],  # Add batch dimension
             training=False,
-            deterministic=True,  # Explicitly set deterministic mode
             mutable=False,
-            augment=False,  # Don't use augmentation during inference
             rngs={'dropout': dropout_rng}
         )
     
@@ -219,28 +197,22 @@ class WaldoFinder:
         # Run inference
         outputs = self.predict_fn(processed)
         
-        # Print detailed debug info
-        boxes = np.array(outputs['boxes'][0])  # Convert JAX array to numpy
-        scores = np.array(outputs['scores'][0])  # Convert JAX array to numpy
-        print("\nRaw Detection Results:")
-        print(f"Coordinates (normalized):")
-        print(f"  x1, y1: ({boxes[0]:.3f}, {boxes[1]:.3f})")
-        print(f"  x2, y2: ({boxes[2]:.3f}, {boxes[3]:.3f})")
-        print(f"Box size: {boxes[2]-boxes[0]:.3f} x {boxes[3]-boxes[1]:.3f}")
-        print(f"Confidence: {scores.item():.3%}")
+        # Process outputs
+        boxes = np.array(outputs['boxes'][0])  # Shape: [4] for single box
+        scores = np.array(outputs['scores'][0])  # Shape: [1] for single confidence
         
-        # Postprocess
+        # Postprocess boxes
         boxes, scores = self._postprocess_boxes(
-            outputs['boxes'][0],  # Remove batch dimension
-            outputs['scores'][0],
+            boxes[None],  # Add dimension to match expected shape
+            scores[None],
             conf_threshold
         )
         
         if len(boxes) == 0:
-            print(f"Could not find Waldo :( (threshold: {conf_threshold})")
+            print(f"\nNo detection above confidence threshold ({conf_threshold:.0%})")
             return {'boxes': boxes, 'scores': scores}
         
-        print(f"Found Waldo! (Confidence: {scores[0]:.2%})")
+        print(f"\nFound Waldo with {scores[0]:.1%} confidence!")
         
         if visualize:
             self.visualize(image, boxes[0], scores[0], no_blur=no_blur)

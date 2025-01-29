@@ -132,16 +132,32 @@ class WaldoDetector(nn.Module):
             nn.Dense(4),
         ], name='box_head')(x)
         
-        # Split coordinates and enforce ordering with proper normalization
-        x1y1, x2y2 = jnp.split(boxes, 2, axis=-1)
-        x1y1 = jax.nn.sigmoid(x1y1)  # Bound to [0,1]
+        # Predict in center-size format directly
+        boxes = nn.Dense(4)(x)  # Raw predictions
         
-        # Compute relative offset and scale it to ensure x2,y2 stay in [0,1]
-        # Use sigmoid and multiply by (1-x1y1) to ensure the offset keeps x2,y2 <= 1
-        relative_offset = jax.nn.sigmoid(x2y2) * (1 - x1y1)
-        x2y2 = x1y1 + relative_offset  # Now guaranteed to be in [x1y1, 1]
+        # Split predictions into center and size components
+        xy_center = jax.nn.sigmoid(boxes[..., :2])  # Center in [0,1]
         
-        boxes = jnp.concatenate([x1y1, x2y2], axis=-1)
+        # Enforce size constraints before sigmoid
+        MIN_SIZE = 0.1
+        MAX_SIZE = 0.4
+        SIZE_RANGE = MAX_SIZE - MIN_SIZE
+        
+        # Transform size predictions to be within constraints
+        wh_raw = boxes[..., 2:]
+        wh = MIN_SIZE + SIZE_RANGE * jax.nn.sigmoid(wh_raw)
+        
+        # Ensure center coordinates allow for box size
+        max_center = 1.0 - wh/2
+        min_center = wh/2
+        xy_center = min_center + (max_center - min_center) * xy_center
+        
+        # Convert to corner format
+        half_wh = wh / 2
+        boxes = jnp.concatenate([
+            xy_center - half_wh,  # x1,y1
+            xy_center + half_wh   # x2,y2
+        ], axis=-1)
         
         # Simplified score prediction head
         scores = nn.Sequential([
@@ -294,12 +310,12 @@ def generalized_box_iou_loss(pred_boxes: jnp.ndarray,
     # Add L1 loss component for better gradient flow
     l1_loss = jnp.mean(jnp.abs(pred_boxes - true_boxes), axis=-1)
     
-    return (1 - giou) + 0.1 * l1_loss
+    return (1 - giou) + 0.05 * l1_loss  # Reduced L1 loss weight
 
 def sigmoid_focal_loss(pred: jnp.ndarray,
                       target: jnp.ndarray,
-                      alpha: float = 0.25,
-                      gamma: float = 2.0) -> jnp.ndarray:
+                      alpha: float = 0.5,  # Increased alpha for better balance
+                      gamma: float = 1.5) -> jnp.ndarray:  # Reduced gamma for smoother gradients
     """Compute focal loss for better handling of class imbalance."""
     pred = jax.nn.sigmoid(pred)
     ce_loss = optax.sigmoid_binary_cross_entropy(pred, target)
