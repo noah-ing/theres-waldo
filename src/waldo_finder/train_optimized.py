@@ -13,6 +13,7 @@ import jax.numpy as jnp
 from tqdm.auto import tqdm
 import numpy as np
 from flax.training import dynamic_scale as dynamic_scale_lib
+import optax
 
 from waldo_finder.model_optimized import (
     create_optimized_train_state,
@@ -110,6 +111,15 @@ def train(cfg: DictConfig) -> None:
     steps_per_epoch = len(train_dataset.annotations) // cfg.training.batch_size
     num_train_steps = steps_per_epoch * cfg.training.num_epochs
     warmup_steps = steps_per_epoch * cfg.training.warmup_epochs
+    
+    # Create learning rate schedule
+    lr_schedule = optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=cfg.training.learning_rate,
+        warmup_steps=warmup_steps,
+        decay_steps=num_train_steps,
+        end_value=cfg.training.learning_rate * 0.01
+    )
     
     state = create_optimized_train_state(
         init_rng,
@@ -265,7 +275,7 @@ def train(cfg: DictConfig) -> None:
                 'epoch': epoch + 1,
                 **train_epoch_metrics,
                 **val_epoch_metrics,
-                'learning_rate': float(state.opt_state.hyperparams['learning_rate'])
+                'learning_rate': float(lr_schedule(state.step))  # Get learning rate from schedule directly
             })
         
         # Enhanced model saving
