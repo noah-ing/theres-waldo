@@ -13,9 +13,9 @@ A state-of-the-art computer vision system that automatically locates Waldo in "W
 
 ## 🌟 Features
 
-- **Advanced Detection**: Vision Transformer-based architecture for precise Waldo localization
+- **Advanced Detection**: Vision Transformer-based architecture with pre-sigmoid size constraints
 - **CPU Optimized**: Engineered for efficient CPU inference without GPU requirements
-- **High Accuracy**: Sophisticated box prediction with size-aware confidence scoring
+- **High Accuracy**: Sophisticated box prediction with balanced loss functions
 - **Rich Visualization**: Interactive detection display with ground truth overlay
 - **Developer Friendly**: Clean codebase with comprehensive documentation
 
@@ -59,8 +59,9 @@ The system uses a Vision Transformer (ViT) architecture optimized for CPU infere
 
 - 8-layer transformer with 8 attention heads
 - 512 hidden dimension with 2048 MLP dimension
-- Single box prediction with size constraints
-- GIoU and Focal loss for accurate detection
+- Single box prediction with pre-sigmoid size constraints [0.1, 0.4]
+- Balanced GIoU and Focal loss for stable training
+- Center coordinate constraints for valid boxes
 
 ### Training Pipeline
 
@@ -68,8 +69,8 @@ The training system features:
 
 - Efficient data loading with aspect ratio preservation
 - Advanced augmentation suite for better generalization
-- Gradient accumulation for stable updates
-- Early stopping with validation monitoring
+- Increased gradient accumulation (8 steps) for stability
+- Enhanced early stopping with longer patience
 - Comprehensive metric tracking
 
 ### Configuration
@@ -89,8 +90,11 @@ model:
 training:
   batch_size: 2
   num_epochs: 50
-  learning_rate: 0.001
-  gradient_accumulation_steps: 4
+  learning_rate: 0.0003  # Optimized for stability
+  gradient_accumulation_steps: 8  # Increased for better updates
+  early_stopping:
+    patience: 15  # Allow proper convergence
+    min_delta: 0.0001  # Fine-grained improvements
 ```
 
 ## 🔧 Advanced Usage
@@ -101,7 +105,7 @@ training:
 # Train with custom configuration
 python -m waldo_finder.train \
   training.batch_size=4 \
-  training.learning_rate=0.0005
+  training.learning_rate=0.0003
 
 # Enable wandb logging
 export WANDB_MODE=online
@@ -130,9 +134,9 @@ python -m waldo_finder.inference \
 The system achieves robust detection performance:
 
 - **Box Quality**: High IoU with ground truth annotations
-- **Confidence**: Well-calibrated prediction scores
+- **Confidence**: Well-calibrated prediction scores with balanced focal loss
 - **Speed**: Efficient CPU inference (~0.5s per image)
-- **Memory**: Low resource usage with batch accumulation
+- **Memory**: Low resource usage with optimized batch accumulation
 
 ## 🛠️ Development
 
