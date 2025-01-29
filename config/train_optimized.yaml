@@ -55,17 +55,27 @@ training:
     eval_every_n_steps: 200
     save_every_n_steps: 500
     
-  # Loss weighting
+  # Enhanced loss weighting for center-size prediction
   loss_weights:
     bbox_loss: 1.0
-    giou_loss: 2.0  # Increased GIoU weight
+    giou_loss: 2.0  # Keep high weight for IoU
     confidence_loss: 0.5
+    size_loss: 1.0  # New loss for box size constraints
+    center_loss: 1.5  # New loss for center prediction
+    
+  # Box prediction constraints
+  box_constraints:
+    min_size: 0.1  # Minimum box dimension
+    max_size: 0.4  # Maximum box dimension
+    size_target: 0.15  # Target box size for penalty
+    size_penalty: 5.0  # Strength of size penalty
     
   # Advanced regularization
   regularization:
     gradient_clip_norm: 0.5
     weight_decay: 0.2
     label_smoothing: 0.15
+    consistency_weight: 0.5  # Weight for consistency loss
     
   # Warmup settings
   warmup_epochs: 5  # Moved to top level for compatibility
@@ -76,11 +86,14 @@ training:
     cycle_momentum: true
     cycle_decay: 0.8
     
-  # Validation settings
+  # Enhanced validation settings
   validation:
     eval_steps: 100  # Evaluate on subset for faster feedback
     save_predictions: true
     confidence_threshold: 0.5
+    min_box_size: 0.1  # Minimum valid box size
+    max_box_size: 0.4  # Maximum valid box size
+    iou_threshold: 0.5  # IoU threshold for matches
 
 # Hydra settings
 hydra:

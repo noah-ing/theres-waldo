@@ -5,19 +5,24 @@ A state-of-the-art solution for finding Waldo in "Where's Waldo?" puzzles using 
 ## Features
 
 - CPU-optimized Vision Transformer implementation
-- Advanced regularization techniques:
+- Advanced Detection System:
+  - Multi-box detection support
+  - Center-size prediction format
+  - Box size constraints and penalties
+  - Enhanced confidence scoring
+- Advanced Regularization:
   - GridMask augmentation for structured dropout
   - Consistency regularization between views
   - Enhanced attention with relative position encoding
   - Stochastic depth with linear scaling
-- Sophisticated training pipeline:
-  - Cyclic learning rate with warmup and restarts
-  - Enhanced EMA parameter averaging
+- Sophisticated Training:
+  - Robust shape handling and broadcasting
+  - Multi-box batch processing
   - Advanced gradient accumulation
   - Comprehensive metric tracking
-- Memory-efficient design:
-  - Optimized batch processing
-  - Smart gradient handling
+- Memory-efficient Design:
+  - Optimized tensor operations
+  - Smart shape management
   - Enhanced parameter updates
 
 ## Installation
@@ -47,9 +52,11 @@ python -m waldo_finder.train_optimized
 ```
 
 The enhanced training includes:
-- Advanced regularization techniques
-- Improved optimization strategies
-- Better monitoring and checkpointing
+- Multi-box detection support
+- Advanced shape handling
+- Box size constraints
+- Improved regularization
+- Enhanced monitoring
 
 ## Configuration
 
@@ -82,18 +89,27 @@ The Vision Transformer (ViT) architecture includes:
 - 8 attention heads
 - 512-dim hidden states
 - 2048-dim MLP layers
-- Advanced regularization suite
-- Enhanced coordinate prediction
+- Multi-box detection heads
+- Center-size prediction
+- Box size constraints:
+  - Width/height in [0.1, 0.4]
+  - Target size of 0.15
+  - Size-aware penalties
 
 ## Training Pipeline
 
 The enhanced training pipeline features:
+- Multi-box batch processing
+- Robust shape handling
 - Gradient accumulation (8 steps)
-- Cyclic learning rate scheduling
 - Advanced early stopping
 - EMA parameter averaging
-- Comprehensive metrics
-- Enhanced checkpointing
+- Loss Components:
+  - Center point loss (1.5x weight)
+  - Size control loss (1.0x weight)
+  - IoU quality loss (2.0x weight)
+  - Size penalty loss (0.5x weight)
+  - Confidence loss (0.5x weight)
 
 ## Requirements
 

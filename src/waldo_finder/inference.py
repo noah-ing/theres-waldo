@@ -9,13 +9,35 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
+import pickle
 from flax.serialization import msgpack_restore
+import csv
 
-from waldo_finder.model import WaldoDetector, create_train_state
+from waldo_finder.model_optimized import EnhancedWaldoDetector, create_optimized_train_state
 
 class WaldoFinder:
     """Modern interface for Waldo detection."""
+    
+    # Class variable to store ground truth annotations
+    ground_truth = {}
+    
+    @classmethod
+    def load_annotations(cls):
+        """Load ground truth annotations from CSV."""
+        cls.ground_truth = {}
+        with open('annotations/annotations.csv', 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                img_name = row['filename']
+                if img_name not in cls.ground_truth:
+                    cls.ground_truth[img_name] = []
+                cls.ground_truth[img_name].append({
+                    'xmin': int(row['xmin']),
+                    'ymin': int(row['ymin']),
+                    'xmax': int(row['xmax']),
+                    'ymax': int(row['ymax'])
+                })
     
     def __init__(self, model_path: Union[str, Path]):
         """Initialize WaldoFinder.
@@ -23,52 +45,82 @@ class WaldoFinder:
         Args:
             model_path: Path to trained model checkpoint
         """
+        # Load annotations if not already loaded
+        if not self.ground_truth:
+            self.load_annotations()
+            
         self.model_path = Path(model_path)
         
         # Initialize model with same config as training
-        self.model = WaldoDetector(
-            num_heads=12,
-            num_layers=12,
-            hidden_dim=768,
-            mlp_dim=3072,
-            dropout_rate=0.1
+        self.model = EnhancedWaldoDetector(
+            num_heads=8,
+            num_layers=8,
+            hidden_dim=512,
+            mlp_dim=2048,
+            dropout_rate=0.3,
+            attention_dropout=0.2,
+            path_dropout=0.2,
+            stochastic_depth_rate=0.2
         )
 
         # Create initial state to get expected structure
         rng = jax.random.PRNGKey(0)
-        state = create_train_state(
+        state = create_optimized_train_state(
             rng,
             learning_rate=1e-4,  # Doesn't matter for inference
+            num_train_steps=1000,  # Dummy value for inference
             model_kwargs={
-                'num_heads': 12,
-                'num_layers': 12,
-                'hidden_dim': 768,
-                'mlp_dim': 3072,
-                'dropout_rate': 0.1,
+                'model': {
+                    'num_heads': 8,
+                    'num_layers': 8,
+                    'hidden_dim': 512,
+                    'mlp_dim': 2048,
+                    'dropout_rate': 0.3,
+                    'attention_dropout': 0.2,
+                    'path_dropout': 0.2,
+                    'stochastic_depth_rate': 0.2
+                }
             }
         )
         
-        # Load and deserialize parameters
-        with open(self.model_path, 'rb') as f:
-            serialized_params = f.read()
-            params = msgpack_restore(serialized_params)
-            self.variables = {'params': params}
+        # Load and deserialize parameters with proper error handling
+        try:
+            with open(self.model_path, 'rb') as f:
+                save_dict = pickle.load(f)
+                
+                # Print debug info about saved parameters
+                print("\nModel checkpoint info:")
+                print(f"Keys in save_dict: {list(save_dict.keys())}")
+                
+                # Properly handle parameter deserialization
+                if isinstance(save_dict['params'], bytes):
+                    try:
+                        params = msgpack_restore(save_dict['params'])
+                    except Exception as e:
+                        print(f"Error deserializing params: {e}")
+                        raise
+                else:
+                    params = save_dict['params']
+                
+                # Print parameter structure
+                print(f"Parameter structure: {jax.tree_util.tree_structure(params)}")
+                
+                self.variables = {'params': params}
+                
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            raise
         
-        # JIT compile inference function
+        # Create inference PRNG key
+        self.inference_rng = jax.random.PRNGKey(42)
+        
+        # JIT compile inference function with deterministic mode
         self.predict_fn = jax.jit(self._predict)
     
-    def _preprocess_image(self, 
+    def _preprocess_image(self,
                          image: Union[str, Path, np.ndarray],
                          target_size: Tuple[int, int] = (640, 640)) -> np.ndarray:
-        """Preprocess image for inference.
-        
-        Args:
-            image: Image path or numpy array
-            target_size: Target image size
-            
-        Returns:
-            Preprocessed image as numpy array
-        """
+        """Preprocess image for inference."""
         if isinstance(image, (str, Path)):
             image = cv2.imread(str(image))
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -107,12 +159,17 @@ class WaldoFinder:
     
     def _predict(self, image: np.ndarray) -> Dict[str, np.ndarray]:
         """Run model prediction."""
+        # Generate new PRNG key for each prediction
+        self.inference_rng, dropout_rng = jax.random.split(self.inference_rng)
+        
         return self.model.apply(
             self.variables,
             image[None],  # Add batch dimension
             training=False,
+            deterministic=True,  # Explicitly set deterministic mode
             mutable=False,
-            rngs={'dropout': jax.random.PRNGKey(0)}  # Fixed seed for inference
+            augment=False,  # Don't use augmentation during inference
+            rngs={'dropout': dropout_rng}
         )
     
     def _postprocess_boxes(self, 
@@ -153,17 +210,9 @@ class WaldoFinder:
     def find_waldo(self, 
                    image: Union[str, Path, np.ndarray],
                    conf_threshold: float = 0.5,
-                   visualize: bool = True) -> Dict[str, np.ndarray]:
-        """Find Waldo in an image.
-        
-        Args:
-            image: Input image (path or numpy array)
-            conf_threshold: Confidence threshold for detection
-            visualize: Whether to show visualization
-            
-        Returns:
-            Dictionary containing detection results
-        """
+                   visualize: bool = True,
+                   no_blur: bool = False) -> Dict[str, np.ndarray]:
+        """Find Waldo in an image."""
         # Preprocess
         processed = self._preprocess_image(image)
         
@@ -171,14 +220,14 @@ class WaldoFinder:
         outputs = self.predict_fn(processed)
         
         # Print detailed debug info
-        boxes = outputs['boxes'][0]
-        scores = outputs['scores'][0]
+        boxes = np.array(outputs['boxes'][0])  # Convert JAX array to numpy
+        scores = np.array(outputs['scores'][0])  # Convert JAX array to numpy
         print("\nRaw Detection Results:")
         print(f"Coordinates (normalized):")
-        print(f"  x1, y1: ({boxes[0,0]:.3f}, {boxes[0,1]:.3f})")
-        print(f"  x2, y2: ({boxes[0,2]:.3f}, {boxes[0,3]:.3f})")
-        print(f"Box size: {boxes[0,2]-boxes[0,0]:.3f} x {boxes[0,3]-boxes[0,1]:.3f}")
-        print(f"Confidence: {scores[0,0]:.3%}")
+        print(f"  x1, y1: ({boxes[0]:.3f}, {boxes[1]:.3f})")
+        print(f"  x2, y2: ({boxes[2]:.3f}, {boxes[3]:.3f})")
+        print(f"Box size: {boxes[2]-boxes[0]:.3f} x {boxes[3]-boxes[1]:.3f}")
+        print(f"Confidence: {scores.item():.3%}")
         
         # Postprocess
         boxes, scores = self._postprocess_boxes(
@@ -194,7 +243,7 @@ class WaldoFinder:
         print(f"Found Waldo! (Confidence: {scores[0]:.2%})")
         
         if visualize:
-            self.visualize(image, boxes[0], scores[0])
+            self.visualize(image, boxes[0], scores[0], no_blur=no_blur)
         
         return {
             'boxes': boxes,
@@ -205,17 +254,14 @@ class WaldoFinder:
                  image: Union[str, Path, np.ndarray],
                  box: np.ndarray,
                  score: float,
-                 output_path: Optional[str] = None):
-        """Visualize detection results.
-        
-        Args:
-            image: Input image
-            box: Bounding box coordinates
-            score: Confidence score
-            output_path: Optional path to save visualization
-        """
+                 output_path: Optional[str] = None,
+                 no_blur: bool = False):
+        """Visualize detection results."""
+        # Store original image path if provided
+        self.image_path = None
         if isinstance(image, (str, Path)):
-            image = cv2.imread(str(image))
+            self.image_path = str(Path(image))
+            image = cv2.imread(self.image_path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # Create figure and axes
@@ -223,57 +269,81 @@ class WaldoFinder:
         ax = plt.Axes(fig, [0., 0., 1., 1.])
         fig.add_axes(ax)
         
-        # Draw blurred boxes around detection
         height, width = image.shape[:2]
         
-        # Normalize box coordinates
-        box_norm = box / np.array([width, height, width, height])
+        if not no_blur:
+            # Normalize box coordinates for blurring
+            box_norm = box / np.array([width, height, width, height])
+            
+            # Expand box by 20% for better visibility
+            box_norm += np.array([
+                -(box_norm[2] - box_norm[0])/5,
+                -(box_norm[3] - box_norm[1])/5,
+                (box_norm[2] - box_norm[0])/5,
+                (box_norm[3] - box_norm[1])/5
+            ])
+            
+            # Draw blurred regions
+            ax.add_patch(patches.Rectangle(
+                (0, 0), box_norm[1]*width, height,
+                linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
+            ))
+            ax.add_patch(patches.Rectangle(
+                (box_norm[3]*width, 0), width, height,
+                linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
+            ))
+            ax.add_patch(patches.Rectangle(
+                (box_norm[1]*width, 0), (box_norm[3]-box_norm[1])*width, box_norm[0]*height,
+                linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
+            ))
+            ax.add_patch(patches.Rectangle(
+                (box_norm[1]*width, box_norm[2]*height), (box_norm[3]-box_norm[1])*width, height,
+                linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
+            ))
         
-        # Expand box by 50%
-        box_norm += np.array([
-            -(box_norm[2] - box_norm[0])/2,
-            -(box_norm[3] - box_norm[1])/2,
-            (box_norm[2] - box_norm[0])/2,
-            (box_norm[3] - box_norm[1])/2
-        ])
-        
-        # Draw blurred regions
-        ax.add_patch(patches.Rectangle(
-            (0, 0), box_norm[1]*width, height,
-            linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
-        ))
-        ax.add_patch(patches.Rectangle(
-            (box_norm[3]*width, 0), width, height,
-            linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
-        ))
-        ax.add_patch(patches.Rectangle(
-            (box_norm[1]*width, 0), (box_norm[3]-box_norm[1])*width, box_norm[0]*height,
-            linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
-        ))
-        ax.add_patch(patches.Rectangle(
-            (box_norm[1]*width, box_norm[2]*height), (box_norm[3]-box_norm[1])*width, height,
-            linewidth=0, edgecolor='none', facecolor='w', alpha=0.8
-        ))
-        
-        # Draw bounding box
-        rect = patches.Rectangle(
+        # Draw model prediction box (red)
+        rect_pred = patches.Rectangle(
             (box[0], box[1]),
             box[2] - box[0],
             box[3] - box[1],
             linewidth=2,
-            edgecolor='r',
-            facecolor='none'
+            edgecolor='red',
+            facecolor='none',
+            label='Prediction'
         )
-        ax.add_patch(rect)
+        ax.add_patch(rect_pred)
         
-        # Add confidence score
+        # Get ground truth coordinates from loaded annotations
+        if self.image_path:
+            image_name = Path(self.image_path).name
+            truth_boxes = self.ground_truth.get(image_name, [])
+            
+            # Draw all ground truth boxes (green)
+            for truth in truth_boxes:
+                rect_truth = patches.Rectangle(
+                    (truth['xmin'], truth['ymin']),
+                    truth['xmax'] - truth['xmin'],
+                    truth['ymax'] - truth['ymin'],
+                    linewidth=2,
+                    edgecolor='lime',
+                    facecolor='none',
+                    label='Ground Truth' if truth == truth_boxes[0] else None  # Only label first box
+                )
+                ax.add_patch(rect_truth)
+        
+        # Add confidence score with better visibility
         plt.text(
-            box[0], box[1] - 10,
-            f'Waldo: {score:.2%}',
+            box[0], box[1] - 5,
+            f'Prediction: {score:.2%}',
             color='red',
             fontsize=12,
-            bbox=dict(facecolor='white', alpha=0.8)
+            bbox=dict(facecolor='white', alpha=0.9, 
+                     edgecolor='white', linewidth=2)
         )
+        
+        # Add legend
+        ax.legend(loc='upper right', bbox_to_anchor=(1, 1),
+                 facecolor='white', edgecolor='white')
         
         # Show image
         ax.imshow(image)
@@ -297,6 +367,8 @@ def main():
     parser.add_argument('--output', type=str, help='Path to save visualization')
     parser.add_argument('--no-viz', action='store_true',
                       help='Disable visualization')
+    parser.add_argument('--no-blur', action='store_true',
+                      help='Disable blurring effect')
     
     args = parser.parse_args()
     
@@ -304,7 +376,8 @@ def main():
     finder.find_waldo(
         args.image_path,
         conf_threshold=args.conf_threshold,
-        visualize=not args.no_viz
+        visualize=not args.no_viz,
+        no_blur=args.no_blur
     )
 
 if __name__ == '__main__':

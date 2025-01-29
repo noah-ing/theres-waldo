@@ -91,9 +91,7 @@ def train(cfg: DictConfig) -> None:
         data_dir=cfg.data.train_dir,
         image_size=cfg.data.image_size,
         batch_size=cfg.training.batch_size,
-        augment=True,
-        num_workers=cfg.data.num_workers,
-        prefetch_factor=cfg.data.prefetch_factor
+        augment=True
     )
     
     val_dataset = WaldoDataset(
@@ -122,26 +120,32 @@ def train(cfg: DictConfig) -> None:
     )
     
     print("3/5: Pre-compiling JAX functions...")
+    # Create dummy batch with multi-box support
+    max_boxes_per_image = 6  # Based on our dataset (image 36.jpg has 6 boxes)
     dummy_batch = {
         'image': np.zeros((cfg.training.batch_size, *cfg.data.image_size, 3), dtype=np.float32),
-        'boxes': np.zeros((cfg.training.batch_size, 4), dtype=np.float32),
-        'scores': np.ones((cfg.training.batch_size, 1), dtype=np.float32),
+        'boxes': np.zeros((cfg.training.batch_size, max_boxes_per_image, 4), dtype=np.float32),
+        'scores': np.zeros((cfg.training.batch_size, max_boxes_per_image), dtype=np.float32),  # Remove extra dimension
     }
+    # Set first box in each image as valid
+    dummy_batch['scores'][:, 0] = 1.0  # Updated indexing
     
-    # Enhanced training step with consistency regularization
+    # Enhanced training step with multi-box support and box constraints
     @jax.jit
     def enhanced_train_step(state, batch, rng):
         def loss_fn(params):
             return compute_optimized_loss(
                 params, batch, state, rng,
-                consistency_weight=cfg.training.regularization.consistency_weight
+                consistency_weight=cfg.training.regularization.consistency_weight,
+                size_target=cfg.training.box_constraints.size_target,
+                size_penalty=cfg.training.box_constraints.size_penalty
             )
         
         grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
         (loss, metrics), grads = grad_fn(state.params)
         
         # Apply gradient clipping
-        grads = jax.tree_map(
+        grads = jax.tree_util.tree_map(
             lambda g: jnp.clip(g, -cfg.training.regularization.gradient_clip_norm,
                              cfg.training.regularization.gradient_clip_norm),
             grads
@@ -156,7 +160,7 @@ def train(cfg: DictConfig) -> None:
             if state.ema_params is None:
                 state = state.replace(ema_params=state.params)
             else:
-                new_ema = jax.tree_map(
+                new_ema = jax.tree_util.tree_map(
                     lambda ema, p: ema * ema_decay + (1 - ema_decay) * p,
                     state.ema_params,
                     state.params
@@ -165,7 +169,7 @@ def train(cfg: DictConfig) -> None:
         
         return state, metrics
     
-    # Enhanced evaluation step
+    # Enhanced evaluation step with deterministic mode
     @jax.jit
     def enhanced_eval_step(state, batch):
         params = state.ema_params if state.ema_params is not None else state.params
@@ -173,6 +177,7 @@ def train(cfg: DictConfig) -> None:
             {'params': params},
             batch['image'],
             training=False,
+            deterministic=True,  # Explicitly set deterministic mode
             augment=False
         )
         return outputs
@@ -228,7 +233,9 @@ def train(cfg: DictConfig) -> None:
                 train_pbar.set_postfix({
                     'loss': f"{avg_metrics['loss']:.4f}",
                     'giou': f"{avg_metrics['giou_loss']:.4f}",
-                    'cons': f"{avg_metrics['consistency_loss']:.4f}"
+                    'center': f"{avg_metrics['center_loss']:.4f}",
+                    'size': f"{avg_metrics['size_loss']:.4f}",
+                    'penalty': f"{avg_metrics['size_penalty_loss']:.4f}"
                 })
         
         # Calculate epoch metrics

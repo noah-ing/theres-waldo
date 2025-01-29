@@ -58,27 +58,42 @@ class ConsistencyRegularization:
         self.num_crops = num_crops
     
     def __call__(self, features: jnp.ndarray) -> jnp.ndarray:
-        """Compute consistency loss between different views."""
-        # Normalize features
-        features = features / jnp.linalg.norm(features, axis=-1, keepdims=True)
+        """Compute consistency loss between different views with numerical stability."""
+        # Normalize features with epsilon for numerical stability
+        epsilon = 1e-6
+        features = features / (jnp.linalg.norm(features, axis=-1, keepdims=True) + epsilon)
+        
+        # Ensure features can be evenly split
+        batch_size = features.shape[0]
+        if batch_size % self.num_crops != 0:
+            # Pad features to make it divisible
+            pad_size = self.num_crops - (batch_size % self.num_crops)
+            features = jnp.pad(features, ((0, pad_size), (0, 0)))
         
         # Split features into crops
         crops = jnp.split(features, self.num_crops)
         
-        # Compute similarity matrix
-        sim_matrix = jnp.exp(
-            jnp.dot(features, features.T) / self.temperature
+        # Compute similarity matrix with numerical stability
+        # Clip dot product to avoid exponential overflow
+        dot_product = jnp.clip(
+            jnp.dot(features[:batch_size], features[:batch_size].T),
+            a_min=-1.0/self.temperature,
+            a_max=1.0/self.temperature
         )
+        sim_matrix = jnp.exp(dot_product * self.temperature)
         
         # Mask out self-similarity
-        mask = jnp.eye(len(features))
+        mask = jnp.eye(batch_size)
         sim_matrix = sim_matrix * (1 - mask)
         
-        # Compute loss
-        loss = -jnp.log(
-            sim_matrix / (sim_matrix.sum(axis=-1, keepdims=True) + 1e-6)
-        )
-        return loss.mean()
+        # Add small constant for numerical stability in denominator
+        denominator = sim_matrix.sum(axis=-1, keepdims=True) + epsilon
+        
+        # Compute loss with clipping to avoid log(0)
+        loss = -jnp.log(jnp.clip(sim_matrix / denominator, epsilon, 1.0))
+        
+        # Return mean of finite values only
+        return jnp.nan_to_num(loss.mean(), nan=0.0, posinf=1.0, neginf=0.0)
 
 class EnhancedAttention(nn.Module):
     """Enhanced multi-head attention with relative position encoding."""
@@ -88,30 +103,34 @@ class EnhancedAttention(nn.Module):
     
     @nn.compact
     def __call__(self, x: jnp.ndarray, training: bool = False) -> jnp.ndarray:
-        # Project input to queries, keys, and values
-        qkv = nn.Dense(self.num_heads * self.head_dim * 3)(x)
-        qkv = qkv.reshape(x.shape[0], -1, 3, self.num_heads, self.head_dim)
-        queries, keys, values = jnp.split(qkv, 3, axis=2)
+        B, L, _ = x.shape  # batch size, sequence length
         
-        # Compute relative position encoding
-        seq_len = x.shape[1]
-        pos_enc = self._relative_position_encoding(seq_len, self.head_dim)
+        # Single projection for Q, K, V
+        qkv = nn.Dense(3 * self.num_heads * self.head_dim)(x)
+        
+        # Reshape to [batch, length, num_heads, 3 * head_dim]
+        qkv = qkv.reshape(B, L, self.num_heads, 3 * self.head_dim)
+        
+        # Split into Q, K, V
+        q, k, v = jnp.split(qkv, 3, axis=-1)
         
         # Add relative position encoding to keys
-        keys = keys + pos_enc[None, :, None, :]
+        pos_enc = self._relative_position_encoding(L, self.head_dim)
+        k = k + pos_enc[None, :, None, :]
         
-        # Compute attention scores
+        # Scaled dot-product attention
         scale = jnp.sqrt(self.head_dim)
-        scores = jnp.einsum('bqhd,bkhd->bhqk', queries, keys) / scale
+        attn_weights = (q @ jnp.swapaxes(k, -2, -1)) / scale
         
-        # Apply attention dropout
-        scores = nn.Dropout(rate=self.dropout_rate)(
-            scores, deterministic=not training
-        )
+        # Apply dropout to attention weights
+        if training and self.dropout_rate > 0:
+            attn_weights = nn.Dropout(rate=self.dropout_rate)(
+                attn_weights, deterministic=False
+            )
         
-        # Compute weighted sum
-        attn = jax.nn.softmax(scores, axis=-1)
-        out = jnp.einsum('bhqk,bkhd->bqhd', attn, values)
+        # Softmax and apply attention to values
+        attn_weights = jax.nn.softmax(attn_weights, axis=-1)
+        out = attn_weights @ v
         
         # Combine heads and project
         out = out.reshape(x.shape[0], -1, self.num_heads * self.head_dim)
@@ -156,11 +175,16 @@ class EnhancedWaldoDetector(nn.Module):
         self,
         x: jnp.ndarray,
         training: bool = False,
-        augment: bool = False
+        augment: bool = False,
+        deterministic: bool = None
     ) -> Dict[str, jnp.ndarray]:
         """Forward pass with advanced training techniques."""
+        # Set deterministic mode based on training flag if not explicitly provided
+        if deterministic is None:
+            deterministic = not training
+            
         # Apply GridMask augmentation during training
-        if training and augment:
+        if training and augment and not deterministic:
             rng = self.make_rng('dropout')
             x = self.gridmask(rng, x)
         
@@ -218,14 +242,16 @@ class EnhancedWaldoDetector(nn.Module):
             
             # MLP block
             mlp_input = nn.LayerNorm(epsilon=1e-6)(x)
-            mlp_output = nn.Sequential([
-                nn.Dense(self.mlp_dim),
-                nn.gelu,
-                nn.Dropout(rate=self.dropout_rate),
-                nn.Dense(self.hidden_dim)
-            ])(mlp_input, deterministic=not training)
+            # MLP block with separate dropout control
+            mlp_output = nn.Dense(self.mlp_dim)(mlp_input)
+            mlp_output = nn.gelu(mlp_output)
+            if not deterministic:
+                mlp_output = nn.Dropout(rate=self.dropout_rate)(
+                    mlp_output, deterministic=False
+                )
+            mlp_output = nn.Dense(self.hidden_dim)(mlp_output)
             
-            if training:
+            if training and not deterministic:
                 mlp_output = nn.Dropout(rate=1 - keep_prob)(
                     mlp_output, deterministic=False
                 )
@@ -237,29 +263,52 @@ class EnhancedWaldoDetector(nn.Module):
         # Extract features for consistency loss
         features = x[:, 0]  # Use CLS token features
         
-        # Detection heads
-        boxes = nn.Sequential([
-            nn.Dense(256),
-            nn.gelu,
-            nn.Dropout(rate=self.dropout_rate),
-            nn.Dense(4)
-        ])(features, deterministic=not training)
+        # Detection heads with enhanced multi-box prediction
+        # First branch: predict multiple centers and sizes
+        center_size = nn.Dense(512)(features)
+        center_size = nn.gelu(center_size)
+        if not deterministic:
+            center_size = nn.Dropout(rate=self.dropout_rate)(
+                center_size, deterministic=False
+            )
+        # Output shape: [batch_size, 6, 4] for max 6 boxes per image
+        center_size = nn.Dense(6 * 4)(center_size)
+        center_size = center_size.reshape(-1, 6, 4)  # [cx, cy, w, h] for each box
         
-        # Enforce valid box coordinates
-        x1y1, x2y2 = jnp.split(boxes, 2, axis=-1)
-        x1y1 = jax.nn.sigmoid(x1y1)
-        relative_offset = jax.nn.sigmoid(x2y2) * (1 - x1y1)
-        x2y2 = x1y1 + relative_offset
-        boxes = jnp.concatenate([x1y1, x2y2], axis=-1)
+        # Convert center and size to coordinates with constraints for each box
+        cx, cy, w, h = jnp.split(center_size, 4, axis=-1)  # Split along last dimension
         
-        # Confidence scores
-        scores = nn.Sequential([
-            nn.Dense(256),
-            nn.gelu,
-            nn.Dropout(rate=self.dropout_rate),
-            nn.Dense(1),
-            nn.sigmoid
-        ])(features, deterministic=not training)
+        # Constrain center to [0,1] and size to reasonable bounds for all boxes
+        cx = jax.nn.sigmoid(cx)  # Center x in [0,1]
+        cy = jax.nn.sigmoid(cy)  # Center y in [0,1]
+        w = 0.1 + 0.3 * jax.nn.sigmoid(w)  # Width in [0.1, 0.4]
+        h = 0.1 + 0.3 * jax.nn.sigmoid(h)  # Height in [0.1, 0.4]
+        
+        # Convert to box coordinates ensuring they stay in [0,1] for all boxes
+        x1 = jnp.clip(cx - w/2, 0, 1)
+        y1 = jnp.clip(cy - h/2, 0, 1)
+        x2 = jnp.clip(cx + w/2, 0, 1)
+        y2 = jnp.clip(cy + h/2, 0, 1)
+        
+        # Stack coordinates for all boxes
+        boxes = jnp.concatenate([x1, y1, x2, y2], axis=-1)  # Shape: [batch_size, 6, 4]
+        
+        # Enhanced confidence scores with size penalty for multiple boxes
+        # Score head with separate dropout control
+        scores = nn.Dense(512)(features)
+        scores = nn.gelu(scores)
+        if not deterministic:
+            scores = nn.Dropout(rate=self.dropout_rate)(
+                scores, deterministic=False
+            )
+        scores = nn.Dense(6)(scores)  # One score per box
+        scores = scores.reshape(-1, 6)  # Shape: [batch_size, 6]
+        
+        # Apply size penalty to confidence scores for all boxes
+        box_sizes = (x2 - x1) * (y2 - y1)
+        size_penalties = jnp.exp(-5.0 * jnp.abs(box_sizes - 0.15))  # Penalize boxes too far from expected size
+        scores = jax.nn.sigmoid(scores)[..., None] * size_penalties  # Add dimension for size penalty multiplication
+        scores = scores[..., 0]  # Remove extra dimension after multiplication
         
         return {
             'boxes': boxes,
@@ -275,7 +324,18 @@ def create_optimized_train_state(
     warmup_steps: Optional[int] = None
 ) -> TrainState:
     """Creates initial training state with advanced optimization."""
-    model = EnhancedWaldoDetector(**model_kwargs)
+    # Extract only the parameters expected by EnhancedWaldoDetector
+    detector_kwargs = {
+        'num_heads': model_kwargs.get('model', {}).get('num_heads', 8),
+        'num_layers': model_kwargs.get('model', {}).get('num_layers', 8),
+        'hidden_dim': model_kwargs.get('model', {}).get('hidden_dim', 512),
+        'mlp_dim': model_kwargs.get('model', {}).get('mlp_dim', 2048),
+        'dropout_rate': model_kwargs.get('model', {}).get('dropout_rate', 0.3),
+        'attention_dropout': model_kwargs.get('model', {}).get('attention_dropout', 0.2),
+        'path_dropout': model_kwargs.get('model', {}).get('path_dropout', 0.2),
+        'stochastic_depth_rate': model_kwargs.get('model', {}).get('stochastic_depth_rate', 0.2)
+    }
+    model = EnhancedWaldoDetector(**detector_kwargs)
     
     # Initialize model
     init_rng, dropout_rng = jax.random.split(rng)
@@ -321,9 +381,11 @@ def compute_optimized_loss(
     batch: Dict[str, jnp.ndarray],
     state: TrainState,
     rng: jnp.ndarray,
-    consistency_weight: float = 0.5
+    consistency_weight: float = 0.5,
+    size_target: float = 0.15,
+    size_penalty: float = 5.0
 ) -> Tuple[jnp.ndarray, Dict]:
-    """Compute loss with consistency regularization."""
+    """Compute enhanced loss with center-size prediction and constraints."""
     outputs = state.apply_fn(
         {'params': params},
         batch['image'],
@@ -332,34 +394,117 @@ def compute_optimized_loss(
         rngs={'dropout': rng}
     )
     
-    # Main detection losses
-    giou_loss = generalized_box_iou_loss(
-        outputs['boxes'],
-        batch['boxes']
-    ).mean()
+    # Handle scores shape consistency
+    pred_scores = outputs['scores']  # [batch_size, num_boxes]
+    gt_scores = batch['scores']  # [batch_size, num_boxes]
     
+    # Ensure scores have same number of boxes
+    if pred_scores.shape[1] > gt_scores.shape[1]:
+        pred_scores = pred_scores[:, :gt_scores.shape[1]]
+    elif pred_scores.shape[1] < gt_scores.shape[1]:
+        pad_width = ((0, 0), (0, gt_scores.shape[1] - pred_scores.shape[1]))
+        pred_scores = jnp.pad(pred_scores, pad_width, mode='constant')
+    
+    # Create valid mask from ground truth scores
+    valid_mask = jnp.expand_dims(gt_scores > 0, axis=-1)  # Shape: [batch_size, num_boxes, 1]
+    
+    # Convert ground truth boxes to center-size format with shape handling
+    gt_boxes = batch['boxes']  # [batch_size, num_boxes, 4]
+    gt_x1, gt_y1, gt_x2, gt_y2 = jnp.split(gt_boxes, 4, axis=-1)  # Each has shape [batch_size, num_boxes, 1]
+    gt_w = gt_x2 - gt_x1  # [batch_size, num_boxes, 1]
+    gt_h = gt_y2 - gt_y1  # [batch_size, num_boxes, 1]
+    gt_cx = (gt_x1 + gt_x2) / 2  # [batch_size, num_boxes, 1]
+    gt_cy = (gt_y1 + gt_y2) / 2  # [batch_size, num_boxes, 1]
+    
+    # Extract predicted boxes with shape handling
+    pred_boxes = outputs['boxes']  # [batch_size, num_boxes, 4]
+    # Ensure pred_boxes has same number of boxes as gt_boxes
+    if pred_boxes.shape[1] > gt_boxes.shape[1]:
+        pred_boxes = pred_boxes[:, :gt_boxes.shape[1], :]
+    elif pred_boxes.shape[1] < gt_boxes.shape[1]:
+        pad_width = ((0, 0), (0, gt_boxes.shape[1] - pred_boxes.shape[1]), (0, 0))
+        pred_boxes = jnp.pad(pred_boxes, pad_width, mode='constant')
+    
+    pred_x1, pred_y1, pred_x2, pred_y2 = jnp.split(pred_boxes, 4, axis=-1)  # Each has shape [batch_size, num_boxes, 1]
+    pred_w = pred_x2 - pred_x1  # [batch_size, num_boxes, 1]
+    pred_h = pred_y2 - pred_y1  # [batch_size, num_boxes, 1]
+    pred_cx = (pred_x1 + pred_x2) / 2  # [batch_size, num_boxes, 1]
+    pred_cy = (pred_y1 + pred_y2) / 2  # [batch_size, num_boxes, 1]
+    
+    # All tensors should already have shape [batch_size, num_boxes, 1]
+    
+    # Keep valid_mask as is - it's already [batch_size, num_boxes, 1]
+    
+    # Center point loss with explicit shape handling
+    center_loss = jnp.square(pred_cx - gt_cx) + jnp.square(pred_cy - gt_cy)  # [batch_size, num_boxes]
+    center_loss = jnp.mean(center_loss * valid_mask)  # valid_mask is already [batch_size, num_boxes]
+    
+    # Size loss with explicit shape handling
+    size_loss = jnp.abs(pred_w - gt_w) + jnp.abs(pred_h - gt_h)  # [batch_size, num_boxes]
+    size_loss = jnp.mean(size_loss * valid_mask)  # valid_mask is already [batch_size, num_boxes]
+    
+    # Box size penalty with explicit shape handling
+    pred_size = pred_w * pred_h  # [batch_size, num_boxes]
+    size_deviation = jnp.abs(pred_size - size_target)  # [batch_size, num_boxes]
+    size_penalty_loss = jnp.exp(size_penalty * size_deviation) * valid_mask  # [batch_size, num_boxes]
+    size_penalty_loss = jnp.mean(size_penalty_loss)
+    
+    # Custom IoU loss implementation for multi-box predictions
+    def compute_iou(box1, box2):
+        # Compute intersection coordinates
+        x1 = jnp.maximum(box1[..., 0], box2[..., 0])
+        y1 = jnp.maximum(box1[..., 1], box2[..., 1])
+        x2 = jnp.minimum(box1[..., 2], box2[..., 2])
+        y2 = jnp.minimum(box1[..., 3], box2[..., 3])
+        
+        # Compute areas
+        intersection = jnp.maximum(0, x2 - x1) * jnp.maximum(0, y2 - y1)
+        box1_area = (box1[..., 2] - box1[..., 0]) * (box1[..., 3] - box1[..., 1])
+        box2_area = (box2[..., 2] - box2[..., 0]) * (box2[..., 3] - box2[..., 1])
+        union = box1_area + box2_area - intersection
+        
+        # Compute IoU with numerical stability
+        iou = intersection / (union + 1e-6)
+        return iou
+    
+    # Compute IoU loss
+    ious = compute_iou(pred_boxes, gt_boxes)
+    giou_loss = (1 - ious) * valid_mask[..., 0]  # Remove last dimension for IoU
+    giou_loss = jnp.mean(giou_loss)
+    
+    # Confidence score loss with shape handling
     score_loss = sigmoid_focal_loss(
-        outputs['scores'],
-        batch['scores'],
+        pred_scores,
+        gt_scores,
         alpha=0.25,
         gamma=2.0
-    ).mean()
+    ) * valid_mask[..., 0]  # Remove last dim for proper broadcasting
+    score_loss = jnp.mean(score_loss)
     
     # Consistency regularization loss
     consistency_loss = ConsistencyRegularization()(outputs['features'])
     
-    # Combined loss
-    total_loss = giou_loss + score_loss + consistency_weight * consistency_loss
+    # Combined loss with weights
+    total_loss = (
+        2.0 * giou_loss +  # Higher weight for IoU
+        0.5 * score_loss +  # Lower weight for confidence
+        1.5 * center_loss +  # Higher weight for center accuracy
+        1.0 * size_loss +    # Base weight for size
+        0.5 * size_penalty_loss +  # Moderate weight for size penalty
+        consistency_weight * consistency_loss
+    )
     
     metrics = {
         'loss': total_loss,
         'giou_loss': giou_loss,
         'score_loss': score_loss,
+        'center_loss': center_loss,
+        'size_loss': size_loss,
+        'size_penalty_loss': size_penalty_loss,
         'consistency_loss': consistency_loss
     }
     
     return total_loss, metrics
 
-# Re-use existing loss helper functions
-generalized_box_iou_loss = generalized_box_iou_loss  # From original model.py
-sigmoid_focal_loss = sigmoid_focal_loss  # From original model.py
+# Import loss functions from original model
+from waldo_finder.model import generalized_box_iou_loss, sigmoid_focal_loss
