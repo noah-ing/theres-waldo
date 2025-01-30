@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A state-of-the-art computer vision system that automatically locates Waldo in "Where's Waldo?" images using Vision Transformers and modern deep learning techniques.
+A specialized computer vision system with one mission: FIND WALDO. Using advanced face detection and deep learning, this system is designed specifically to locate Waldo in complex "Where's Waldo?" scenes.
 
 <div align="center">
   <img src="docs/docs.png" alt="Where's Waldo Detection" width="600px"/>
@@ -13,11 +13,11 @@ A state-of-the-art computer vision system that automatically locates Waldo in "W
 
 ## 🌟 Features
 
-- **Advanced Detection**: Vision Transformer-based architecture with pre-sigmoid size constraints
-- **CPU Optimized**: Engineered for efficient CPU inference without GPU requirements
-- **High Accuracy**: Sophisticated box prediction with balanced loss functions
-- **Rich Visualization**: Interactive detection display with ground truth overlay
-- **Developer Friendly**: Clean codebase with comprehensive documentation
+- **Scale-Aware Detection**: Vision Transformer with scale-aware attention for precise localization
+- **Enhanced Augmentations**: Advanced geometric and color transformations with box preservation
+- **High Precision**: Strict IoU threshold (0.7) and high confidence requirement (0.9)
+- **Robust Pipeline**: Comprehensive error handling and validation stability
+- **CPU Optimized**: Efficient detection without GPU requirements
 
 ## 🚀 Quick Start
 
@@ -44,38 +44,55 @@ pip install -e .
 ### Basic Usage
 
 ```bash
-# Run inference on an image
+# Find Waldo in an image
 python -m waldo_finder.inference images/1.jpg --model models/best_model.pkl
 
-# Train a new model
+# Train the Waldo detector
 python -m waldo_finder.train
 ```
 
-## 📖 Documentation
+## 📖 How It Works
 
-### Model Architecture
+### Scale-Aware Detection
 
-The system uses a Vision Transformer (ViT) architecture optimized for CPU inference:
+The system uses a specialized Vision Transformer architecture:
 
-- 8-layer transformer with 8 attention heads
-- 512 hidden dimension with 2048 MLP dimension
-- Single box prediction with pre-sigmoid size constraints [0.1, 0.4]
-- Balanced GIoU and Focal loss for stable training
-- Center coordinate constraints for valid boxes
+- **Scale-Aware Network**:
+  * Scale-based feature extraction
+  * Layer normalization for stability
+  * Enhanced augmentations
+  * Box size constraints
 
-### Training Pipeline
+- **Precise Detection**:
+  1. Extract scale-aware features
+  2. Enforce strict confidence threshold (0.9)
+  3. Ensure precise localization (IoU > 0.7)
 
-The training system features:
+- **Box Handling**:
+  * Tight size constraints [0.05-0.15]
+  * Scale-based adaptation
+  * Box-preserving processing
+  * Coordinate transformations
 
-- Efficient data loading with aspect ratio preservation
-- Advanced augmentation suite for better generalization
-- Increased gradient accumulation (8 steps) for stability
-- Enhanced early stopping with longer patience
-- Comprehensive metric tracking
+### Training Strategy
+
+The training process focuses on robust detection:
+
+- Enhanced augmentations for better generalization:
+  * Random rotations (±7°)
+  * Scale/zoom variations (0.9-1.1)
+  * Advanced color jittering
+  * Box-preserving transformations
+
+- Optimized loss components:
+  * GIoU loss (8.0) for precise boxes
+  * L1 loss (4.0) for coordinates
+  * Confidence (0.1) for calibration
+  * Size (2.0) for constraints
 
 ### Configuration
 
-The project uses Hydra for flexible configuration:
+Key settings optimized for finding Waldo:
 
 ```yaml
 # Model settings
@@ -84,60 +101,59 @@ model:
   num_layers: 8
   hidden_dim: 512
   mlp_dim: 2048
-  dropout_rate: 0.2
+  dropout_rate: 0.4
 
-# Training settings
+# Training configuration
 training:
-  batch_size: 2
-  num_epochs: 50
-  learning_rate: 0.0003  # Optimized for stability
-  gradient_accumulation_steps: 8  # Increased for better updates
+  batch_size: 4
+  num_epochs: 150
+  learning_rate: 0.00003  # Carefully tuned
+  warmup_epochs: 12      # Extended warmup
   early_stopping:
-    patience: 15  # Allow proper convergence
-    min_delta: 0.0001  # Fine-grained improvements
+    patience: 30        # Enhanced stability
+    min_delta: 0.0001  # Precise improvements
 ```
 
 ## 🔧 Advanced Usage
 
-### Custom Training
+### Training Options
 
 ```bash
-# Train with custom configuration
+# Train with custom settings
 python -m waldo_finder.train \
-  training.batch_size=4 \
-  training.learning_rate=0.0003
+  training.confidence_threshold=0.9 \
+  training.iou_threshold=0.7
 
 # Enable wandb logging
 export WANDB_MODE=online
 python -m waldo_finder.train
 ```
 
-### Inference Options
+### Detection Options
 
 ```bash
-# Run inference with visualization
+# Find Waldo with visualization
 python -m waldo_finder.inference \
   images/1.jpg \
   --model models/best_model.pkl \
-  --conf-threshold 0.5 \
-  --output result.png
+  --conf-threshold 0.9 \
+  --output found_waldo.png
 
-# Disable visualization blur
+# Show full scene
 python -m waldo_finder.inference \
   images/1.jpg \
   --model models/best_model.pkl \
   --no-blur
 ```
 
-## 📊 Performance
+## 📊 Success Metrics
 
-The system achieves excellent detection performance:
+The system prioritizes precise detection:
 
-- **Training**: Validation loss improved from 1.2368 to 1.0562 (14.6%)
-- **Stability**: Perfect loss balance (GIoU: ~1.014, Score: 0.0071)
-- **Convergence**: Train/val gap closed from 0.2 to 0.035
-- **Speed**: Efficient CPU inference (~0.5s per image)
-- **Memory**: Optimized with 8-step gradient accumulation
+- **Scale Awareness**: Adaptive feature extraction for varying sizes
+- **Detection Rate**: Optimized for reliable Waldo detection
+- **Location Accuracy**: Strict IoU (0.7) for precise localization
+- **Speed**: Efficient CPU-based detection
 
 ## 🛠️ Development
 
@@ -146,13 +162,13 @@ The system achieves excellent detection performance:
 ```
 theres-waldo/
 ├── src/waldo_finder/        # Core implementation
-│   ├── model.py            # Vision Transformer architecture
-│   ├── train.py            # Training pipeline
-│   ├── inference.py        # Detection pipeline
-│   └── data.py            # Data management
-├── config/                 # Hydra configurations
-├── annotations/           # Ground truth data
-├── images/               # Test images
+│   ├── model.py            # Scale-aware architecture
+│   ├── train.py            # Enhanced training pipeline
+│   ├── inference.py        # Detection system
+│   └── data.py            # Augmentation & data handling
+├── config/                 # Training configurations
+├── annotations/           # Ground truth locations
+├── images/               # Test scenes
 └── outputs/             # Training results
 ```
 

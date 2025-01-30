@@ -4,43 +4,68 @@ defaults:
   - override hydra/hydra_logging: default
   - override hydra/job_logging: default
 
-# Experiment settings
-experiment_name: waldo-finder-jax
-seed: 42
+# Waldo-focused configuration
+experiment_name: waldo-finder-scale-aware
+seed: 42  # For reproducibility
 
-# Data settings
+# Data pipeline configuration
 data:
-  train_dir: "."  # Default to current directory, can be overridden via command line
-  val_dir: "."    # Use same directory for validation during development
-  image_size: [640, 640]
+  train_dir: "."
+  val_dir: "."
+  image_size: [640, 640]  # Maintain resolution for pattern details
+  normalize: true
+  cache_data: true
+  scale_aware: true  # Enable scale-aware processing
 
-# Advanced training settings
+# Training configuration optimized for precise localization
 training:
-  batch_size: 2  # Smaller batch size for more frequent updates
-  num_epochs: 50  # Reduced epochs since we have small dataset
-  steps_per_epoch: null  # Dynamic steps based on dataset
-  learning_rate: 0.0003  # Reduced learning rate for stability
+  batch_size: 4  # Increased for better statistics
+  num_epochs: 150  # Extended for augmented data
+  steps_per_epoch: null
+  learning_rate: 0.00003  # Further reduced for augmented data
   seed: ${seed}
   model_dir: ${hydra:runtime.output_dir}/models
-  warmup_epochs: 3  # Shorter warmup for small dataset
+  warmup_epochs: 12  # Extended warmup for augmented data
   
-  # Advanced training features
-  gradient_accumulation_steps: 8  # Increased accumulation for better stability
-  mixed_precision: false  # Disabled for CPU training
-  gradient_checkpointing: false  # Disabled for CPU training
-  ema: true  # Use exponential moving average of weights
-  ema_decay: 0.9995  # Adjusted for better stability
+  # Optimized training strategy
+  gradient_accumulation_steps: 4  # Adjusted for new batch size
+  mixed_precision: false  # CPU compatibility
+  gradient_checkpointing: false  # CPU compatibility
+  ema: true
+  ema_decay: 0.9999  # Increased for augmented data stability
   
-  # Advanced evaluation
-  eval_freq: 1  # Evaluate every epoch
+  # Tightened evaluation strategy
+  eval_freq: 1
   save_best_only: true
   early_stopping:
-    patience: 15  # Increased patience to allow proper convergence
-    min_delta: 0.0001  # Reduced min delta for finer improvements
+    patience: 30  # Extended for augmented data
+    min_delta: 0.0001  # More strict improvement threshold
+    restore_best_weights: true
     
-  # Multi-GPU training settings
-  sync_bn: true  # Sync batch norm stats across GPUs
+  # Core features
+  sync_bn: true
   find_unused_parameters: true
+  
+  # Rebalanced loss weights for better localization
+  loss_weights:
+    giou: 8.0  # Heavily weighted for precise boxes
+    l1: 4.0    # Increased for better coordinate accuracy
+    confidence: 0.1  # Reduced to prevent overconfidence
+    size: 2.0  # Stronger size constraints
+  
+  # Enhanced metrics for better convergence
+  metrics:
+    iou_threshold: 0.5  # Base IoU threshold
+    confidence_threshold: 0.9  # Maintain high confidence
+    size_range: [0.05, 0.15]  # More restrictive size range
+    scale_bins: [0.05, 0.075, 0.1, 0.125, 0.15]  # Focused scale bins
+    
+  # Scale-aware training features
+  scale_aware:
+    enabled: true
+    size_weights: [3.0, 2.0, 1.0, 2.0, 3.0]  # Higher penalty for extreme sizes
+    adaptive_loss: true
+    size_normalization: true
 
 # Hydra settings
 hydra:

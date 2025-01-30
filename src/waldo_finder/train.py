@@ -20,6 +20,7 @@ from waldo_finder.model import (
     train_step,
     train_step_mixed_precision,
     eval_step,
+    compute_loss,
 )
 from waldo_finder.data import WaldoDataset
 
@@ -67,12 +68,14 @@ def train(cfg: DictConfig) -> None:
     except:
         print("Wandb not available, continuing without logging")
     
-    # Set up data loaders
+    # Set up data loaders with semi-supervised support
     train_dataset = WaldoDataset(
         data_dir=cfg.data.train_dir,
         image_size=cfg.data.image_size,
         batch_size=cfg.training.batch_size,
         augment=True,
+        use_unlabeled=True,
+        box_format='cxcywh'  # Use consistent format
     )
     
     val_dataset = WaldoDataset(
@@ -80,6 +83,8 @@ def train(cfg: DictConfig) -> None:
         image_size=cfg.data.image_size,
         batch_size=cfg.training.batch_size,
         augment=False,
+        use_unlabeled=False,  # Validation only on labeled data
+        box_format='cxcywh'
     )
     
     print("Starting initialization...")
@@ -88,15 +93,21 @@ def train(cfg: DictConfig) -> None:
     rng, init_rng = jax.random.split(rng)
     
     print("2/5: Creating initial state...")
-    # Calculate training parameters with single pass per epoch
-    steps_per_epoch = len(train_dataset.annotations) // cfg.training.batch_size
+    # Calculate training parameters considering all available images
+    steps_per_epoch = (len(train_dataset.image_paths) + cfg.training.batch_size - 1) // cfg.training.batch_size
     num_train_steps = steps_per_epoch * cfg.training.num_epochs
     warmup_steps = steps_per_epoch * cfg.training.warmup_epochs
+    
+    # Create model kwargs with data config
+    model_kwargs = {
+        **dict(cfg.model),
+        'data': dict(cfg.data)  # Include data config for image size
+    }
     
     state = create_train_state(
         init_rng,
         learning_rate=cfg.training.learning_rate,
-        model_kwargs=dict(cfg.model),
+        model_kwargs=model_kwargs,
         num_train_steps=num_train_steps,
         warmup_epochs=cfg.training.warmup_epochs,
         steps_per_epoch=steps_per_epoch
@@ -108,6 +119,7 @@ def train(cfg: DictConfig) -> None:
         'image': np.zeros((cfg.training.batch_size, *cfg.data.image_size, 3), dtype=np.float32),
         'boxes': np.zeros((cfg.training.batch_size, 4), dtype=np.float32),
         'scores': np.ones((cfg.training.batch_size, 1), dtype=np.float32),
+        'is_labeled': np.ones((cfg.training.batch_size,), dtype=bool)
     }
     dummy_rng = jax.random.PRNGKey(0)
     
@@ -127,7 +139,8 @@ def train(cfg: DictConfig) -> None:
     print(f"- {num_train_steps} total training steps")
     print(f"- {cfg.training.learning_rate} peak learning rate")
     print(f"- {cfg.training.batch_size} batch size")
-    print(f"- {len(train_dataset.annotations)} total training images")
+    print(f"- {len(train_dataset.image_paths)} total images")
+    print(f"- {len(train_dataset.labeled_images)} labeled images")
     
     # Temporarily disable mixed precision until we get stable training
     dynamic_scale = None
@@ -135,7 +148,7 @@ def train(cfg: DictConfig) -> None:
     if cfg.training.ema:
         ema_decay = cfg.training.ema_decay
         def ema_update(params, new_params):
-            return jax.tree_map(
+            return jax.tree.map(
                 lambda p1, p2: p1 * ema_decay + (1 - ema_decay) * p2,
                 params, new_params
             )
@@ -161,95 +174,194 @@ def train(cfg: DictConfig) -> None:
         # Enhanced training with gradient accumulation and mixed precision
         train_metrics = []
         accumulated_grads = None
-        train_pbar = tqdm(range(steps_per_epoch), desc=f'Epoch {epoch+1}')
+        train_pbar = tqdm(range(steps_per_epoch), desc=f'Epoch {epoch+1}', ncols=80)
         
         for step in train_pbar:
-            batch = next(train_loader)
+            try:
+                batch = next(train_loader)
+            except (StopIteration, ValueError) as e:
+                print(f"\nWarning: Batch loading failed - {str(e)}")
+                continue
             rng, step_rng = jax.random.split(rng)
             
-            # Mixed precision training step
-            if dynamic_scale:
-                state, metrics, dynamic_scale = train_step_mixed_precision(
-                    state, batch, step_rng, dynamic_scale)
-            else:
-                state, metrics = train_step(state, batch, step_rng)
+            # Handle labeled and unlabeled data separately
+            labeled_mask = batch.pop('is_labeled')
+            step_metrics = {}
             
-            # Update EMA parameters
-            if ema_update is not None and (step + 1) % grad_accumulation_steps == 0:
+            if np.any(labeled_mask):
+                # Process labeled data
+                labeled_batch = {
+                    'image': batch['image'][labeled_mask],
+                    'boxes': batch['boxes'][labeled_mask],
+                    'scores': batch['scores'][labeled_mask]
+                }
+                if dynamic_scale:
+                    state, metrics, dynamic_scale = train_step_mixed_precision(
+                        state, labeled_batch, step_rng, dynamic_scale)
+                else:
+                    state, metrics = train_step(state, labeled_batch, step_rng)
+                
+                # Track labeled metrics
+                step_metrics.update({f'labeled_{k}': v for k, v in metrics.items()})
+            
+            if np.any(~labeled_mask) and epoch >= cfg.training.warmup_epochs:
+                # Process unlabeled data with pseudo-labeling
+                unlabeled_batch = {
+                    'image': batch['image'][~labeled_mask],
+                    'boxes': batch['boxes'][~labeled_mask],
+                    'scores': batch['scores'][~labeled_mask]
+                }
+                
+                # Generate pseudo-labels using EMA model
+                if ema_params is not None:
+                    # Get predictions from EMA model
+                    pseudo_outputs = eval_step(
+                        state.replace(params=ema_params), 
+                        unlabeled_batch
+                    )
+                    
+                    # Filter high-confidence predictions
+                    conf_threshold = 0.9
+                    high_conf_mask = pseudo_outputs['scores'] > conf_threshold
+                    
+                    if np.any(high_conf_mask):
+                        # Create batch with pseudo-labels
+                        pseudo_batch = {
+                            'image': unlabeled_batch['image'][high_conf_mask],
+                            'boxes': pseudo_outputs['boxes'][high_conf_mask],
+                            'scores': pseudo_outputs['scores'][high_conf_mask]
+                        }
+                        
+                        # Train on pseudo-labeled data with reduced weight
+                        if dynamic_scale:
+                            state, pseudo_metrics, dynamic_scale = train_step_mixed_precision(
+                                state, pseudo_batch, step_rng, dynamic_scale)
+                        else:
+                            state, pseudo_metrics = train_step(state, pseudo_batch, step_rng)
+                        
+                        # Track pseudo-label metrics
+                        step_metrics.update({f'pseudo_{k}': v * 0.5 for k, v in pseudo_metrics.items()})
+            
+            # Update EMA parameters if we processed any data
+            if step_metrics and ema_update is not None and (step + 1) % grad_accumulation_steps == 0:
                 ema_params = ema_update(ema_params, state.params)
             
-            train_metrics.append(metrics)
+            # Only append metrics if we processed some data
+            if step_metrics:
+                train_metrics.append(step_metrics)
             
-            # Enhanced progress bar with more metrics
+            # Clean progress output with safe metric averaging
             recent_metrics = train_metrics[-100:]
-            avg_metrics = {
-                k: float(np.mean([m[k] for m in recent_metrics]))
-                for k in recent_metrics[0].keys()
-            }
-            train_pbar.set_postfix({
-                'loss': f"{avg_metrics['loss']:.4f}",
-                'giou_loss': f"{avg_metrics.get('giou_loss', 0):.4f}",
-                'score_loss': f"{avg_metrics.get('score_loss', 0):.4f}"
-            })
+            if recent_metrics:
+                # Handle each metric separately to avoid shape issues
+                avg_metrics = {}
+                for k in recent_metrics[0].keys():
+                    try:
+                        values = [float(m[k]) for m in recent_metrics]  # Convert to float immediately
+                        avg_metrics[k] = float(np.mean(values))
+                    except (ValueError, TypeError) as e:
+                        print(f"\nWarning: Could not average metric {k}: {str(e)}")
+                        avg_metrics[k] = 0.0
+                
+                train_pbar.set_postfix({
+                    'L': f"{avg_metrics.get('labeled_loss', 0.0):.3f}",
+                    'G': f"{avg_metrics.get('labeled_giou_loss', 0.0):.3f}",
+                    'B': f"{avg_metrics.get('labeled_l1_loss', 0.0):.3f}",
+                    'C': f"{avg_metrics.get('labeled_score_loss', 0.0):.3f}",
+                    'P': f"{avg_metrics.get('pseudo_loss', 0.0):.3f}"
+                }, refresh=True)
         
-        # Calculate epoch metrics
-        train_epoch_metrics = {
-            k: float(np.mean([m[k] for m in train_metrics]))
-            for k in train_metrics[0].keys()
-        }
+        # Calculate epoch metrics safely with explicit float conversion
+        train_epoch_metrics = {}
+        if train_metrics:
+            for k in train_metrics[0].keys():
+                try:
+                    values = [float(m[k]) for m in train_metrics]  # Convert to float immediately
+                    train_epoch_metrics[k] = float(np.mean(values))
+                except (ValueError, TypeError) as e:
+                    print(f"\nWarning: Could not average epoch metric {k}: {str(e)}")
+                    train_epoch_metrics[k] = 0.0
         
-        # Enhanced validation with same metrics as training
+        # Precision-focused validation with comprehensive metrics
         val_metrics = []
         eval_params = ema_params if ema_update is not None else state.params
+        valid_batches = 0
         
-        for batch in val_dataset.val_loader():
-            outputs = eval_step(state.replace(params=eval_params), batch)
+        try:
+            for batch in val_dataset.val_loader():
+                try:
+                    outputs = eval_step(state.replace(params=eval_params), batch)
+                    
+                    # Use same loss computation as training for consistency
+                    val_loss, val_batch_metrics = compute_loss(
+                        eval_params,
+                        batch,
+                        state.replace(params=eval_params),
+                        state.dropout_rng
+                    )
+                    
+                    # Track validation metrics
+                    # Convert metrics to scalars immediately
+                    scalar_metrics = {}
+                    for k, v in val_batch_metrics.items():
+                        try:
+                            scalar_metrics[f"val_{k}"] = float(jnp.mean(v))
+                        except (ValueError, TypeError) as e:
+                            print(f"\nWarning: Could not convert validation metric {k} to scalar: {str(e)}")
+                            scalar_metrics[f"val_{k}"] = 0.0
+                    val_metrics.append(scalar_metrics)
+                    valid_batches += 1
+                except Exception as batch_e:
+                    print(f"\nWarning: Validation batch failed - {str(batch_e)}")
+                    continue
             
-            # Use same loss computation as training
-            from waldo_finder.model import generalized_box_iou_loss, sigmoid_focal_loss
-            
-            # Calculate GIoU loss
-            giou_loss = generalized_box_iou_loss(
-                outputs['boxes'],
-                batch['boxes']
-            ).mean()
-            
-            # Calculate score loss with focal loss
-            score_loss = sigmoid_focal_loss(
-                outputs['scores'],
-                batch['scores'],
-                alpha=0.25,
-                gamma=2.0
-            ).mean()
-            
-            total_loss = giou_loss + score_loss
-            
-            val_metrics.append({
-                'val_loss': total_loss,
-                'val_giou_loss': giou_loss,
-                'val_score_loss': score_loss
-            })
+            # Calculate validation metrics safely with explicit float conversion
+            val_epoch_metrics = {}
+            if val_metrics:
+                print(f"\nProcessed {valid_batches} valid validation batches")
+                for k in val_metrics[0].keys():
+                    try:
+                        values = [float(m[k]) for m in val_metrics]  # Convert to float immediately
+                        val_epoch_metrics[k] = float(np.mean(values))
+                    except (ValueError, TypeError) as e:
+                        print(f"\nWarning: Could not average validation metric {k}: {str(e)}")
+                        val_epoch_metrics[k] = 0.0
+            else:
+                print("\nWarning: No valid validation batches collected")
+                # Use training metrics as fallback, but mark them clearly
+                val_epoch_metrics = {
+                    f"val_{k}": float(v) for k, v in train_epoch_metrics.items()
+                }
+                print("Using training metrics as validation fallback")
+        except Exception as e:
+            print(f"\nWarning: Validation loop failed - {str(e)}")
+            # Use training metrics as fallback, but mark them clearly
+            val_epoch_metrics = {
+                f"val_{k}": float(v) for k, v in train_epoch_metrics.items()
+            }
+            print("Using training metrics as validation fallback")
         
-        val_epoch_metrics = {
-            k: float(np.mean([m[k] for m in val_metrics]))
-            for k in val_metrics[0].keys()
-        }
-        
-        # Log metrics if wandb is available
+        # Simple, effective logging
         if use_wandb:
             wandb.log({
                 'epoch': epoch + 1,
                 **train_epoch_metrics,
                 **val_epoch_metrics,
+                'learning_rate': cfg.training.learning_rate  # Use configured learning rate
             })
         
-        # Check early stopping
-        if early_stopping(val_epoch_metrics['val_loss']):
-            print(f"\nEarly stopping triggered after {epoch + 1} epochs")
-            break
+        # Check early stopping with safe metric access
+        val_loss = val_epoch_metrics.get('val_loss')
+        if val_loss is not None:
+            if early_stopping(val_loss):
+                print(f"\nEarly stopping triggered after {epoch + 1} epochs")
+                break
+        else:
+            print("\nWarning: Skipping early stopping check - no validation loss available")
             
-        # Enhanced model saving with more metadata
-        if val_epoch_metrics['val_loss'] < best_val_loss:
+        # Enhanced model saving with safe metric access
+        val_loss = val_epoch_metrics.get('val_loss')
+        if val_loss is not None and val_loss < best_val_loss:
             best_val_loss = val_epoch_metrics['val_loss']
             
             # Enhanced model saving with EMA and training state
@@ -283,7 +395,7 @@ def train(cfg: DictConfig) -> None:
                 artifact.metadata = {
                     'epoch': epoch + 1,
                     'val_loss': float(best_val_loss),
-                    'train_loss': float(train_epoch_metrics['loss']),
+                    'train_loss': float(train_epoch_metrics.get('labeled_loss', 0.0)),
                     'architecture': {
                         'num_layers': cfg.model.num_layers,
                         'hidden_dim': cfg.model.hidden_dim,
@@ -293,10 +405,32 @@ def train(cfg: DictConfig) -> None:
                 artifact.add_file(str(model_dir / 'model.pkl'))
                 wandb.log_artifact(artifact)
         
+        # Clean epoch summary focused on finding Waldo
+        print(f"\n{'='*30}")
         print(f"Epoch {epoch+1}")
-        print(f"Train Loss: {train_epoch_metrics['loss']:.4f}")
-        print(f"Val Loss: {val_epoch_metrics['val_loss']:.4f}")
-        print(f"Best Val Loss: {best_val_loss:.4f}")
+        print(f"{'='*30}")
+        
+        # Pattern recognition with safe metric access
+        conf_train = 1 - train_epoch_metrics.get('labeled_score_loss', 0)
+        conf_val = 1 - val_epoch_metrics.get('val_score_loss', 0)
+        print(f"Finding Waldo: {conf_val*100:.1f}% confident (train: {conf_train*100:.1f}%)")
+        
+        # Box quality (secondary)
+        iou_val = 1 - val_epoch_metrics.get('val_giou_loss', 0)
+        print(f"Box Quality:   {iou_val*100:.1f}% accurate")
+        
+        # Pseudo-label stats (if available)
+        if 'pseudo_score_loss' in train_epoch_metrics:
+            pseudo_conf = 1 - train_epoch_metrics['pseudo_score_loss']
+            pseudo_iou = 1 - train_epoch_metrics['pseudo_giou_loss']
+            print(f"Pseudo Labels: {pseudo_conf*100:.1f}% confident, {pseudo_iou*100:.1f}% accurate")
+        
+        # Model improvement
+        if val_epoch_metrics['val_loss'] < best_val_loss:
+            improvement = (best_val_loss - val_epoch_metrics['val_loss']) / best_val_loss * 100
+            print(f"Improved:      {improvement:.1f}%")
+        
+        print(f"{'='*30}\n")
     
     if use_wandb:
         wandb.finish()

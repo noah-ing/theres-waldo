@@ -1,6 +1,6 @@
 """Data processing utilities for Waldo detection."""
 
-from typing import Dict, Iterator, Tuple
+from typing import Dict, Iterator, Tuple, Optional
 import jax.numpy as jnp
 import cv2
 import numpy as np
@@ -14,7 +14,9 @@ class WaldoDataset:
                  data_dir: str,
                  image_size: Tuple[int, int] = (640, 640),
                  batch_size: int = 16,
-                 augment: bool = True):
+                 augment: bool = True,
+                 use_unlabeled: bool = True,
+                 box_format: str = 'cxcywh'):  # Use center format consistently
         """Initialize dataset.
         
         Args:
@@ -28,31 +30,41 @@ class WaldoDataset:
         self.batch_size = batch_size
         self.augment = augment
         
-        # Load annotations from project root
-        project_root = Path(self.data_dir).resolve()
-        while not (project_root / 'annotations').exists() and project_root.parent != project_root:
-            project_root = project_root.parent
+        # Find project root efficiently
+        self.project_root = Path(data_dir).resolve()
+        while not (self.project_root / 'annotations').exists() and self.project_root.parent != self.project_root:
+            self.project_root = self.project_root.parent
+            
+        # Store parameters
+        self.box_format = box_format
+        self.use_unlabeled = use_unlabeled
         
-        # Load annotations and filter for existing images
-        self.project_root = project_root  # Store for later use
-        self.annotations = pd.read_csv(
-            project_root / 'annotations' / 'annotations.csv'
-        )
+        # Get all image paths first
+        self.image_paths = list((self.project_root / 'images').glob('*.jpg'))
         
-        # Filter annotations to only include existing images
-        existing_images = set(f.name for f in (project_root / 'images').iterdir() if f.is_file() and f.suffix.lower() == '.jpg')
-        self.annotations = self.annotations[self.annotations['filename'].isin(existing_images)]
+        # Stream annotations instead of loading all at once
+        self.annotations_path = self.project_root / 'annotations' / 'annotations.csv'
         
-        if len(self.annotations) == 0:
+        # Create index of labeled images
+        self.labeled_images = set()
+        if self.annotations_path.exists():
+            for chunk in pd.read_csv(self.annotations_path, chunksize=1000):
+                self.labeled_images.update(chunk['filename'].unique())
+        
+        if len(self.image_paths) == 0:
             raise ValueError("No valid images found in dataset")
         
-    def _load_image(self, image_path: str) -> np.ndarray:
-        """Load and preprocess image."""
-        image = cv2.imread(str(self.project_root / 'images' / image_path))
-        if image is None:
-            raise ValueError(f"Failed to load image: {image_path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        return image
+    def _load_image(self, image_path: str) -> Optional[np.ndarray]:
+        """Load and preprocess image, returning None if load fails."""
+        try:
+            image = cv2.imread(str(self.project_root / 'images' / image_path))
+            if image is None:
+                print(f"Warning: Failed to load image: {image_path}")
+                return None
+            return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            print(f"Warning: Error loading image {image_path}: {str(e)}")
+            return None
     
     def _resize_with_aspect_ratio(self, 
                                 image: np.ndarray,
@@ -101,85 +113,132 @@ class WaldoDataset:
     def _apply_augmentations(self,
                            image: np.ndarray,
                            box: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply advanced augmentation techniques for better generalization."""
+        """Apply enhanced augmentation techniques."""
         if not self.augment:
             return image, box
             
-        # Random horizontal/vertical flips
+        height, width = image.shape[:2]
+        
+        # Convert box to absolute coordinates for augmentations
+        abs_box = box.copy()
+        abs_box = abs_box * np.array([width, height, width, height])
+        
+        # Random rotation (±7 degrees)
+        if np.random.random() > 0.5:
+            angle = np.random.uniform(-7, 7)
+            matrix = cv2.getRotationMatrix2D((width/2, height/2), angle, 1.0)
+            image = cv2.warpAffine(image, matrix, (width, height), 
+                                 borderMode=cv2.BORDER_REFLECT)
+            
+            # Rotate box corners
+            if len(abs_box.shape) == 1:  # Single box
+                x1, y1, x2, y2 = abs_box
+                corners = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+                ones = np.ones(shape=(len(corners), 1))
+                corners_ones = np.hstack([corners, ones])
+                rotated = corners_ones.dot(matrix.T)
+                
+                # Get new bounds
+                x1 = np.min(rotated[:, 0])
+                y1 = np.min(rotated[:, 1])
+                x2 = np.max(rotated[:, 0])
+                y2 = np.max(rotated[:, 1])
+                
+                abs_box = np.array([x1, y1, x2, y2])
+        
+        # Scale/zoom (0.9-1.1)
+        if np.random.random() > 0.5:
+            scale = np.random.uniform(0.9, 1.1)
+            new_w = int(width * scale)
+            new_h = int(height * scale)
+            image = cv2.resize(image, (new_w, new_h))
+            
+            # Adjust box for scale
+            abs_box = abs_box * scale
+            
+            # Crop or pad to original size
+            if scale > 1:  # Zoom in - crop
+                x_start = (new_w - width) // 2
+                y_start = (new_h - height) // 2
+                image = image[y_start:y_start+height, x_start:x_start+width]
+                abs_box -= np.array([x_start, y_start, x_start, y_start])
+            else:  # Zoom out - pad
+                x_start = (width - new_w) // 2
+                y_start = (height - new_h) // 2
+                temp = np.zeros((height, width, 3), dtype=image.dtype)
+                temp[y_start:y_start+new_h, x_start:x_start+new_w] = image
+                image = temp
+                abs_box += np.array([x_start, y_start, x_start, y_start])
+        
+        # Horizontal flips
         if np.random.random() > 0.5:
             image = np.fliplr(image)
-            # Handle box flipping for both single box and multiple boxes
-            if len(box.shape) == 1:  # Single box
-                x1, y1, x2, y2 = box
-                box = np.array([1 - x2, y1, 1 - x1, y2])
+            if len(abs_box.shape) == 1:  # Single box
+                x1, y1, x2, y2 = abs_box
+                abs_box = np.array([width - x2, y1, width - x1, y2])
             else:  # Multiple boxes
-                box[:, [0, 2]] = 1 - box[:, [2, 0]]  # Flip x coordinates
-                
-        if np.random.random() > 0.8:  # Less frequent vertical flip
-            image = np.flipud(image)
-            # Handle box flipping for both single box and multiple boxes
-            if len(box.shape) == 1:  # Single box
-                x1, y1, x2, y2 = box
-                box = np.array([x1, 1 - y2, x2, 1 - y1])
-            else:  # Multiple boxes
-                box[:, [1, 3]] = 1 - box[:, [3, 1]]  # Flip y coordinates
-            
-        # Simple but effective augmentations
+                abs_box[:, [0, 2]] = width - abs_box[:, [2, 0]]
+        
+        # Enhanced color jittering
         if np.random.random() > 0.5:
-            # Random zoom/scale with fixed output size
-            scale = np.random.uniform(0.9, 1.1)
-            h, w = image.shape[:2]
-            scaled_h, scaled_w = int(h * scale), int(w * scale)
-            scaled = cv2.resize(image, (scaled_w, scaled_h))
-            
-            # Resize back to original size
-            image = cv2.resize(scaled, (w, h))
-            # No need to adjust box coordinates since we maintain original size
-            
-        # Color augmentations using OpenCV
-        if np.random.random() > 0.5:
-            # Random brightness
-            brightness = np.random.uniform(0.7, 1.3)
+            # Brightness (0.9-1.1)
+            brightness = np.random.uniform(0.9, 1.1)
             image = cv2.convertScaleAbs(image, alpha=brightness, beta=0)
-            
+        
         if np.random.random() > 0.5:
-            # Random contrast
-            contrast = np.random.uniform(0.7, 1.3)
+            # Contrast (0.9-1.1)
+            contrast = np.random.uniform(0.9, 1.1)
             mean = np.mean(image)
             image = cv2.convertScaleAbs(image, alpha=contrast, beta=(1-contrast)*mean)
             
         if np.random.random() > 0.5:
-            # Random saturation
-            image_hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-            saturation = np.random.uniform(0.7, 1.3)
-            image_hsv[:, :, 1] = cv2.convertScaleAbs(image_hsv[:, :, 1], alpha=saturation)
-            image = cv2.cvtColor(image_hsv, cv2.COLOR_HSV2RGB)
-            
-        # Gaussian noise
-        if np.random.random() > 0.5:
-            noise = np.random.normal(0, 10, image.shape)
-            image = np.clip(image + noise, 0, 255)
+            # Hue shift (±10°)
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+            image[:, :, 0] = (image[:, :, 0] + np.random.uniform(-10, 10)) % 180
+            image = cv2.cvtColor(image, cv2.COLOR_HSV2RGB)
+        
+        # Clip box coordinates to image bounds
+        abs_box = np.clip(abs_box, 0, [width, height, width, height])
+        
+        # Convert box back to normalized coordinates
+        box = abs_box / np.array([width, height, width, height])
         
         return np.array(image), box
     
-    def _convert_to_center_size(self, box: np.ndarray) -> np.ndarray:
-        """Convert [x1, y1, x2, y2] to [cx, cy, w, h] format."""
-        x1, y1, x2, y2 = box
-        w = x2 - x1
-        h = y2 - y1
-        cx = x1 + w/2
-        cy = y1 + h/2
-        return np.array([cx, cy, w, h])
+    def _convert_box_format(self, box: np.ndarray, from_format: str, to_format: str) -> np.ndarray:
+        """Convert between box formats efficiently."""
+        if from_format == to_format:
+            return box
+            
+        if from_format == 'xyxy' and to_format == 'cxcywh':
+            x1, y1, x2, y2 = box
+            w = x2 - x1
+            h = y2 - y1
+            return np.array([x1 + w/2, y1 + h/2, w, h])
+            
+        if from_format == 'cxcywh' and to_format == 'xyxy':
+            cx, cy, w, h = box
+            return np.array([cx - w/2, cy - h/2, cx + w/2, cy + h/2])
+            
+        raise ValueError(f"Unsupported conversion: {from_format} -> {to_format}")
     
-    def _prepare_sample(self, 
+    def _prepare_sample(self,
                        image_path: str,
-                       boxes: np.ndarray) -> Dict[str, np.ndarray]:
-        """Prepare a single sample with single box (first Waldo)."""
+                       boxes: np.ndarray = None) -> Optional[Dict[str, np.ndarray]]:
+        """Prepare a sample with optional boxes for semi-supervised learning."""
         # Load and preprocess image
         image = self._load_image(image_path)
+        if image is None:
+            return None
         
-        # Take first box only
-        box = boxes[0]  # Use first Waldo in case of multiple
+        # Initialize default box and score
+        box = np.zeros((4,), dtype=np.float32)  # [cx, cy, w, h] format
+        score = np.array([0.0], dtype=np.float32)
+        
+        if boxes is not None and len(boxes) > 0:
+            # Convert first box to consistent format
+            box = self._convert_box_format(boxes[0], 'xyxy', self.box_format)
+            score = np.array([1.0], dtype=np.float32)
         
         # Resize and normalize coordinates
         image, box = self._resize_with_aspect_ratio(image, box)
@@ -187,97 +246,136 @@ class WaldoDataset:
         # Apply augmentations
         image, box = self._apply_augmentations(image, box)
         
-        # Convert box to center-size format
-        box = self._convert_to_center_size(box)
-        
         # Normalize image to [0, 1]
         image = image.astype(np.float32) / 255.0
         
         return {
             'image': image,
-            'boxes': box.astype(np.float32),  # Single box
-            'scores': np.array([1.0], dtype=np.float32),  # Single score
+            'boxes': box.astype(np.float32),
+            'scores': score
         }
     
+    def _get_boxes_for_image(self, image_name: str) -> Optional[np.ndarray]:
+        """Stream and get boxes for an image efficiently."""
+        try:
+            boxes = []
+            for chunk in pd.read_csv(self.annotations_path, chunksize=1000):
+                img_annots = chunk[chunk['filename'] == image_name]
+                if not img_annots.empty:
+                    boxes.extend(img_annots[['xmin', 'ymin', 'xmax', 'ymax']].values)
+            return np.array(boxes) if boxes else None
+        except Exception as e:
+            print(f"Warning: Error loading annotations for {image_name}: {str(e)}")
+            return None
+
     def train_loader(self) -> Iterator[Dict[str, np.ndarray]]:
-        """Create training data loader for single box detection."""
+        """Create training data loader with semi-supervised support."""
         while True:
-            # Group annotations by image
-            grouped = self.annotations.groupby('filename')
-            # Shuffle image names
-            image_names = list(grouped.groups.keys())
-            np.random.shuffle(image_names)
+            # Shuffle all image paths
+            image_paths = self.image_paths.copy()
+            np.random.shuffle(image_paths)
             
             batch_images = []
             batch_boxes = []
             batch_scores = []
+            batch_is_labeled = []  # Track which samples are labeled
             
-            for image_name in image_names:
-                # Get boxes for this image
-                image_annots = grouped.get_group(image_name)
-                boxes = image_annots[['xmin', 'ymin', 'xmax', 'ymax']].values
+            for image_path in image_paths:
+                image_name = image_path.name
                 
-                # Prepare sample with first box
-                sample = self._prepare_sample(image_name, boxes)
+                # Get boxes if image is labeled
+                boxes = self._get_boxes_for_image(image_name) if image_name in self.labeled_images else None
+                
+                # Skip unlabeled data if not using it
+                if boxes is None and not self.use_unlabeled:
+                    continue
+                    
+                # Prepare sample
+                sample = self._prepare_sample(str(image_path), boxes)
+                if sample is None:  # Skip if image loading failed
+                    continue
                 
                 batch_images.append(sample['image'])
-                batch_boxes.append(sample['boxes'])
-                batch_scores.append(sample['scores'])
+                if boxes is not None:
+                    batch_boxes.append(sample['boxes'])
+                    batch_scores.append(sample['scores'])
+                    batch_is_labeled.append(True)
+                else:
+                    # For unlabeled data, use dummy boxes and scores
+                    batch_boxes.append(np.zeros((4,), dtype=np.float32))
+                    batch_scores.append(np.array([0.0], dtype=np.float32))
+                    batch_is_labeled.append(False)
                 
+                # Yield batch when full
                 if len(batch_images) == self.batch_size:
                     yield {
                         'image': np.stack(batch_images),
-                        'boxes': np.stack(batch_boxes),  # Shape: [batch_size, 4]
-                        'scores': np.stack(batch_scores),  # Shape: [batch_size, 1]
+                        'boxes': np.stack(batch_boxes),
+                        'scores': np.stack(batch_scores),
+                        'is_labeled': np.array(batch_is_labeled)
                     }
                     batch_images = []
                     batch_boxes = []
                     batch_scores = []
+                    batch_is_labeled = []
+            
+            # Yield remaining samples
+            if batch_images:
+                yield {
+                    'image': np.stack(batch_images),
+                    'boxes': np.stack(batch_boxes),
+                    'scores': np.stack(batch_scores),
+                    'is_labeled': np.array(batch_is_labeled)
+                }
     
     def val_loader(self) -> Iterator[Dict[str, np.ndarray]]:
-        """Create validation data loader for single box detection."""
-        # Group annotations by image
-        grouped = self.annotations.groupby('filename')
-        
-        # Use a fixed subset of images for validation
-        val_images = list(grouped.groups.keys())
-        val_indices = np.linspace(
-            0, len(val_images)-1,
-            num=min(100, len(val_images)),
-            dtype=int
-        )
-        val_images = [val_images[i] for i in val_indices]
+        """Create validation data loader using only labeled data."""
+        # Get validation images (20% of labeled images)
+        val_images = list(self.labeled_images)
+        np.random.seed(42)  # Fixed seed for consistent validation set
+        val_size = max(int(len(val_images) * 0.2), 1)
+        val_images = np.random.choice(val_images, size=val_size, replace=False)
         
         batch_images = []
         batch_boxes = []
         batch_scores = []
         
         for image_name in val_images:
-            # Get boxes for this image
-            image_annots = grouped.get_group(image_name)
-            boxes = image_annots[['xmin', 'ymin', 'xmax', 'ymax']].values
-            
-            # Prepare sample with first box
-            sample = self._prepare_sample(image_name, boxes)
-            
-            batch_images.append(sample['image'])
-            batch_boxes.append(sample['boxes'])
-            batch_scores.append(sample['scores'])
-            
-            if len(batch_images) == self.batch_size:
-                yield {
-                    'image': np.stack(batch_images),
-                    'boxes': np.stack(batch_boxes),  # Shape: [batch_size, 4]
-                    'scores': np.stack(batch_scores),  # Shape: [batch_size, 1]
-                }
-                batch_images = []
-                batch_boxes = []
-                batch_scores = []
+            try:
+                # Get boxes for this image
+                boxes = self._get_boxes_for_image(image_name)
+                if boxes is None:
+                    continue
+                    
+                # Prepare sample
+                sample = self._prepare_sample(str(self.project_root / 'images' / image_name), boxes)
+                if sample is None:  # Skip if image loading failed
+                    continue
+                
+                batch_images.append(sample['image'])
+                batch_boxes.append(sample['boxes'])
+                batch_scores.append(sample['scores'])
+                
+                # Yield batch when full
+                if len(batch_images) == self.batch_size:
+                    yield {
+                        'image': np.stack(batch_images),
+                        'boxes': np.stack(batch_boxes),
+                        'scores': np.stack(batch_scores)
+                    }
+                    batch_images = []
+                    batch_boxes = []
+                    batch_scores = []
+            except Exception as e:
+                print(f"Warning: Error processing validation image {image_name}: {str(e)}")
+                continue
         
-        # Return remaining samples
-        if batch_images:
+        # Only yield if we have valid samples
+        if len(batch_images) > 0:
             yield {
                 'image': np.stack(batch_images),
                 'boxes': np.stack(batch_boxes),
-                'scores': np.stack(batch_scores),
+                'scores': np.stack(batch_scores)
             }
+        else:
+            print("Warning: No valid validation samples in batch")
