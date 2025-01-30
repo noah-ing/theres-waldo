@@ -42,7 +42,7 @@ A sophisticated computer vision system that leverages advanced deep learning tec
 ### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/theres-waldo.git
+git clone https://github.com/noah-ing/theres-waldo.git
 cd theres-waldo
 
 # Create virtual environment
@@ -189,4 +189,3 @@ MIT License - see [LICENSE](LICENSE)
 ## 📧 Contact
 For questions and feedback:
 - Open an issue
-- Contact: [your-contact-info]
