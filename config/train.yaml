@@ -46,24 +46,24 @@ training:
   sync_bn: true
   find_unused_parameters: true
   
-  # Rebalanced loss weights for better localization
+  # Rebalanced loss weights for stable training
   loss_weights:
-    giou: 8.0  # Heavily weighted for precise boxes
-    l1: 4.0    # Increased for better coordinate accuracy
-    confidence: 0.1  # Reduced to prevent overconfidence
-    size: 2.0  # Stronger size constraints
+    giou: 2.0  # Reduced to prevent overcompensation
+    l1: 1.0    # Reduced for more stable box regression
+    confidence: 0.5  # Increased to reduce overconfidence
+    size: 1.0  # Relaxed size constraints
   
   # Enhanced metrics for better convergence
   metrics:
     iou_threshold: 0.5  # Base IoU threshold
-    confidence_threshold: 0.9  # Maintain high confidence
-    size_range: [0.05, 0.15]  # More restrictive size range
-    scale_bins: [0.05, 0.075, 0.1, 0.125, 0.15]  # Focused scale bins
+    confidence_threshold: 0.8  # Slightly relaxed confidence
+    size_range: [0.03, 0.2]  # Wider size range
+    scale_bins: [0.03, 0.08, 0.13, 0.16, 0.2]  # Adjusted scale bins
     
   # Scale-aware training features
   scale_aware:
     enabled: true
-    size_weights: [3.0, 2.0, 1.0, 2.0, 3.0]  # Higher penalty for extreme sizes
+    size_weights: [1.5, 1.2, 1.0, 1.2, 1.5]  # Gentler size penalties
     adaptive_loss: true
     size_normalization: true
 

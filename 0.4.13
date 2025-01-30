@@ -1,0 +1,12 @@
+Collecting jax>=0.4.13 (from jax[cpu]>=0.4.13)
+  Using cached jax-0.5.0-py3-none-any.whl.metadata (22 kB)
+Collecting jaxlib
+  Using cached jaxlib-0.5.0-cp312-cp312-win_amd64.whl.metadata (1.0 kB)
+Requirement already satisfied: ml_dtypes>=0.4.0 in c:\users\noah\dev\theres-waldo\venv\lib\site-packages (from jax>=0.4.13->jax[cpu]>=0.4.13) (0.5.1)
+Requirement already satisfied: numpy>=1.25 in c:\users\noah\dev\theres-waldo\venv\lib\site-packages (from jax>=0.4.13->jax[cpu]>=0.4.13) (2.2.2)
+Requirement already satisfied: opt_einsum in c:\users\noah\dev\theres-waldo\venv\lib\site-packages (from jax>=0.4.13->jax[cpu]>=0.4.13) (3.4.0)
+Requirement already satisfied: scipy>=1.11.1 in c:\users\noah\dev\theres-waldo\venv\lib\site-packages (from jax>=0.4.13->jax[cpu]>=0.4.13) (1.15.1)
+Using cached jax-0.5.0-py3-none-any.whl (2.3 MB)
+Using cached jaxlib-0.5.0-cp312-cp312-win_amd64.whl (63.9 MB)
+Installing collected packages: jaxlib, jax
+Successfully installed jax-0.5.0 jaxlib-0.5.0

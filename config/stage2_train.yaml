@@ -1,0 +1,47 @@
+# Stage 2 training configuration for scene detection
+
+defaults:
+  - model/vit_base
+
+wandb:
+  enabled: false  # Disable wandb for now
+  project: waldo-finder
+  run_name: stage2-scene-detection
+  mode: disabled  # Valid values: online, offline, dryrun, disabled, run, shared
+
+model:
+  stage1_checkpoint: trained_model/stage1/best_model.pkl
+  hidden_dim: 512
+  num_heads: 8
+  num_layers: 4
+  mlp_dim: 2048
+  dropout_rate: 0.1
+
+data:
+  train_path: training_data/stage2/train
+  val_path: training_data/stage2/val
+  batch_size: 4
+  image_size: [512, 512]
+  num_workers: 4
+  prefetch_size: 2
+
+training:
+  seed: 42
+  num_epochs: 100
+  learning_rate: 0.00003
+  warmup_steps: 100
+  total_steps: 10000
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 4
+  
+  early_stopping:
+    patience: 20
+    min_delta: 0.0001
+  
+  checkpoint_dir: trained_model/stage2
+
+loss_weights:
+  l1: 1.0      # Direct coordinate regression
+  giou: 2.0    # Box overlap quality
+  confidence: 1.0  # Increased since we removed size loss
