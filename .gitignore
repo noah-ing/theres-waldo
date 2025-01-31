@@ -35,6 +35,8 @@ outputs/
 trained_model/
 /models/
 wandb/
+object_detection/
+docs/
 
 # Memory Bank (never commit to git)
 cline_docs/
