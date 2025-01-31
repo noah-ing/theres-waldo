@@ -7,8 +7,6 @@
 
 A state-of-the-art computer vision system that uses advanced deep learning to find Waldo in complex scenes. Built with a hierarchical Vision Transformer architecture and context-aware attention mechanisms, this system achieves precise localization through scale-aware detection and scene-level understanding.
 
-![Where's Waldo Detection](docs/docs.png)
-
 ## 🌟 Technical Highlights
 
 ### Hierarchical Architecture
@@ -72,7 +70,7 @@ pip install -e .
 ### Basic Usage
 ```bash
 # Find Waldo in an image
-python -m waldo_finder.inference --image images/1.jpg --model checkpoints/latest.ckpt
+python -m waldo_finder.inference --image path/to/image.jpg --model checkpoints/latest.ckpt
 
 # Train the model
 python -m waldo_finder.training.train --config-name scene_model
