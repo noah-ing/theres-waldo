@@ -4,14 +4,39 @@ defaults:
   - override hydra/hydra_logging: default
   - override hydra/job_logging: default
 
+# Logging configuration
+logging:
+  use_wandb: false  # Disable wandb by default
+  save_dir: "outputs/logs"
+  # Wandb settings (only used if use_wandb is true)
+  project: "waldo-finder"
+  name: "pretrain-curriculum"
+  log_every_n_steps: 50
+
+# Hardware configuration
+hardware:
+  accelerator: "gpu"
+  devices: [0]  # Use first GPU
+  strategy: "ddp"
+  precision: 16  # Mixed precision training
+
+# Checkpoint configuration
+checkpoint:
+  dirpath: "outputs/checkpoints"
+  filename: "waldo-{epoch:02d}-{val_loss:.2f}"
+  save_top_k: 3
+  monitor: "val/pretrain_loss"
+  mode: "min"
+  save_last: true
+
 # Waldo-focused configuration
 experiment_name: waldo-finder-scale-aware
 seed: 42  # For reproducibility
 
 # Data pipeline configuration
 data:
-  train_dir: "."
-  val_dir: "."
+  train_dir: "data/scenes"
+  val_dir: "data/scenes"
   image_size: [640, 640]  # Maintain resolution for pattern details
   normalize: true
   cache_data: true
@@ -19,53 +44,92 @@ data:
 
 # Training configuration optimized for precise localization
 training:
-  batch_size: 4  # Increased for better statistics
-  num_epochs: 150  # Extended for augmented data
-  steps_per_epoch: null
-  learning_rate: 0.00003  # Further reduced for augmented data
+  # Pre-training configuration
+  pretrain:
+    enabled: true
+    epochs: 50
+    batch_size: 32  # Larger batch size for pre-training
+    learning_rate: 0.0001
+    warmup_epochs: 5
+    
+  # Contrastive learning configuration
+  contrastive:
+    enabled: true
+    epochs: 50
+    batch_size: 16
+    learning_rate: 0.00005
+    warmup_epochs: 3
+    
+  # Detection training configuration
+  detection:
+    enabled: true
+    epochs: 150
+    batch_size: 4
+    learning_rate: 0.00003
+    warmup_epochs: 12
+    
+  # Common training settings
   seed: ${seed}
   model_dir: ${hydra:runtime.output_dir}/models
-  warmup_epochs: 12  # Extended warmup for augmented data
   
-  # Optimized training strategy
-  gradient_accumulation_steps: 4  # Adjusted for new batch size
-  mixed_precision: false  # CPU compatibility
-  gradient_checkpointing: false  # CPU compatibility
+# Optimizer configuration
+optimizer:
+  learning_rate: ${training.detection.learning_rate}
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  max_epochs: ${training.detection.epochs}
+  min_lr: 1e-6
+
+# Training strategy
+strategy:
+  gradient_accumulation_steps: 4
+  mixed_precision: true  # Enable for GPU
+  gradient_checkpointing: true  # Enable for memory efficiency
   ema: true
-  ema_decay: 0.9999  # Increased for augmented data stability
+  ema_decay: 0.9999
   
   # Tightened evaluation strategy
   eval_freq: 1
   save_best_only: true
   early_stopping:
-    patience: 30  # Extended for augmented data
-    min_delta: 0.0001  # More strict improvement threshold
+    patience: 10  # Reduced for faster training
+    min_delta: 0.001  # Slightly relaxed for faster progression
     restore_best_weights: true
     
-  # Core features
+# Core features
+features:
   sync_bn: true
   find_unused_parameters: true
   
-  # Rebalanced loss weights for stable training
-  loss_weights:
-    giou: 2.0  # Reduced to prevent overcompensation
-    l1: 1.0    # Reduced for more stable box regression
-    confidence: 0.5  # Increased to reduce overconfidence
-    size: 1.0  # Relaxed size constraints
+# Loss configuration
+loss:
+  # Pre-training loss
+  contrastive_margin: 1.0
   
-  # Enhanced metrics for better convergence
-  metrics:
-    iou_threshold: 0.5  # Base IoU threshold
-    confidence_threshold: 0.8  # Slightly relaxed confidence
-    size_range: [0.03, 0.2]  # Wider size range
-    scale_bins: [0.03, 0.08, 0.13, 0.16, 0.2]  # Adjusted scale bins
+  # Detection loss weights
+  box_weight: 2.0
+  scale_weight: 1.0
+  context_weight: 0.5
+  conf_weight: 0.5  # Changed from size_weight to conf_weight
+  
+# Detection configuration
+detection:
+  conf_threshold: 0.8
+  nms_threshold: 0.5
+  iou_threshold: 0.5
+  size_range: [0.03, 0.2]
+  scale_bins: [0.03, 0.08, 0.13, 0.16, 0.2]
+  hidden_dim: 256
+  min_size: 0.03
+  max_size: 0.2
     
-  # Scale-aware training features
-  scale_aware:
-    enabled: true
-    size_weights: [1.5, 1.2, 1.0, 1.2, 1.5]  # Gentler size penalties
-    adaptive_loss: true
-    size_normalization: true
+# Curriculum configuration
+curriculum:
+  enabled: true
+  advance_threshold: 0.3  # Loss threshold to advance curriculum
+  size_weights: [1.5, 1.2, 1.0, 1.2, 1.5]
+  adaptive_loss: true
+  size_normalization: true
 
 # Hydra settings
 hydra:

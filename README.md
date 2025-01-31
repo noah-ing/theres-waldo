@@ -1,41 +1,53 @@
 # Where's Waldo Detector 🔍
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-CPU%20Optimized-green.svg)](https://github.com/google/jax)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A sophisticated computer vision system that leverages advanced deep learning techniques to locate Waldo in complex scenes. Built with a novel two-stage architecture combining feature learning and scene detection, this system achieves high-precision localization through innovative coordinate parameterization and scale-aware detection.
+A state-of-the-art computer vision system that uses advanced deep learning to find Waldo in complex scenes. Built with a hierarchical Vision Transformer architecture and context-aware attention mechanisms, this system achieves precise localization through scale-aware detection and scene-level understanding.
 
 ![Where's Waldo Detection](docs/docs.png)
 
 ## 🌟 Technical Highlights
 
-### Two-Stage Architecture
-- **Stage 1: Feature Learning**
-  * 6-layer Vision Transformer for appearance modeling
-  * Patch-based embedding with positional encoding
-  * Binary classification with F1 score optimization
-  * Enhanced data augmentation pipeline
+### Hierarchical Architecture
+- **Vision Transformer Backbone (41.6M params)**
+  * Multi-scale processing with 32x32 patches
+  * Progressive feature pooling
+  * 12 transformer layers
+  * Scale-aware embeddings
+  * Mixed precision training
 
-- **Stage 2: Scene Detection (v2.0.0)**
-  * Novel coordinate parameterization for guaranteed valid boxes
-  * Natural offset mechanism for x2,y2 prediction
-  * Scale-aware feature transfer from stage 1
-  * Mathematically constrained outputs in [0,1]
+- **Context-Aware Attention (3.9M params)**
+  * Global scene attention
+  * Local region focus
+  * Cross-scale interactions
+  * Spatial relationships
+  * Window attention
 
-### Performance Metrics
-- **Detection Accuracy**
-  * Validation Loss: 3.33 (stable convergence)
-  * Box Precision (L1): 0.75
-  * Box Overlap (GIoU): 1.29
-  * Confidence: 0.9999 (near-perfect)
+- **Detection System (331K params)**
+  * Location regression
+  * Scale prediction
+  * Context scoring
+  * Confidence estimation
+  * NMS post-processing
 
-- **Training Stability**
-  * Clean convergence in 32 epochs
-  * No numerical instabilities
-  * Consistent batch performance
-  * Optimal early stopping
+### Training Pipeline
+- **Multi-Stage Training**
+  * Pre-training phase (10 epochs)
+  * Contrastive learning (10 epochs)
+  * Detection fine-tuning (20 epochs)
+  * Curriculum progression
+
+- **Data Organization**
+  * 29 total scenes
+  * 23 training scenes
+  * 6 validation scenes
+  * Curriculum split:
+    - Easy: 2 scenes (8.7%)
+    - Medium: 14 scenes (60.9%)
+    - Hard: 7 scenes (30.4%)
 
 ## 🚀 Quick Start
 
@@ -60,122 +72,119 @@ pip install -e .
 ### Basic Usage
 ```bash
 # Find Waldo in an image
-python -m waldo_finder.inference images/1.jpg --model models/best_model.pkl
+python -m waldo_finder.inference --image images/1.jpg --model checkpoints/latest.ckpt
 
-# Train the detector
-python -m waldo_finder.train
+# Train the model
+python -m waldo_finder.training.train --config-name scene_model
 ```
 
 ## 📖 Technical Architecture
 
-### Feature Learning (Stage 1)
-- **Vision Transformer**
-  * 6 transformer layers
-  * 8 attention heads
-  * 256 hidden dimension
-  * Patch size 16x16
-  * Global pooling
+### Core Components
+- **Hierarchical Vision Transformer**
+  * Multi-scale processing
+  * Progressive feature pooling
+  * Skip connections
+  * Feature pyramids
 
-- **Training Strategy**
-  * Balanced sampling
-  * Strong augmentation
-  * Early stopping
-  * F1 optimization
+- **Context-Aware Attention**
+  * Global scene features
+  * Local region features
+  * Cross-scale features
+  * Spatial relations
 
-### Scene Detection (Stage 2)
-- **Coordinate Parameterization**
-  * Base coordinates (x1,y1) with sigmoid activation
-  * Relative offsets for x2,y2 computation
-  * Guaranteed valid boxes through mathematical constraints
-  * Natural learning space for box dimensions
+- **Detection Head**
+  * Box coordinates
+  * Scale factors
+  * Context scores
+  * Confidence values
 
-- **Feature Transfer**
-  * Pre-trained feature extraction
-  * Scene-level adaptation
-  * Scale-aware processing
-  * Context understanding
+### Training Strategy
+- **Multi-Stage Pipeline**
+  * Self-supervised pre-training
+  * Contrastive learning
+  * Detection fine-tuning
+  * Curriculum progression
 
-### Loss Components
-- **Multi-objective Optimization**
-  * GIoU loss for box overlap quality
-  * L1 loss for coordinate regression
-  * Binary confidence with sigmoid calibration
-  * Mathematically stable formulation
+### Performance Optimization
+- **Hardware Utilization**
+  * GPU acceleration
+  * Mixed precision (16-bit)
+  * Persistent workers
+  * Memory efficiency
 
-## 🔧 Advanced Configuration
+## 🔧 Configuration
 
 ### Model Architecture
 ```yaml
 model:
-  # Stage 1: Feature Learning
-  stage1:
-    num_layers: 6
-    hidden_dim: 256
-    num_heads: 8
-    patch_size: 16
-    dropout_rate: 0.1
-
-  # Stage 2: Scene Detection
-  stage2:
-    hidden_dim: 512
-    num_heads: 8
-    num_layers: 4
-    mlp_dim: 2048
-    dropout_rate: 0.1
+  img_size: 384
+  patch_size: 32
+  num_layers: 12
+  num_heads: 8
+  hidden_dim: 512
+  mlp_dim: 2048
+  dropout: 0.1
 ```
 
 ### Training Settings
 ```yaml
 training:
-  # Optimization
-  batch_size: 4
-  learning_rate: 0.00003
-  warmup_steps: 100
-  weight_decay: 0.01
+  pretrain:
+    epochs: 10
+    batch_size: 32
+    learning_rate: 0.0001
   
-  # Early Stopping
-  patience: 20
-  min_delta: 0.0001
-
-  # Loss Weights
-  loss_weights:
-    giou: 2.0  # Box overlap quality
-    l1: 1.0    # Coordinate regression
-    confidence: 1.0  # Detection confidence
+  contrastive:
+    epochs: 10
+    batch_size: 16
+    learning_rate: 0.00005
+  
+  detection:
+    epochs: 20
+    batch_size: 4
+    learning_rate: 0.00003
 ```
 
-## 📊 Development Metrics
+## 📊 System Requirements
 
-### Training Performance
-- **Stage 1 (Feature Learning)**
-  * Binary Classification F1: 0.95
-  * Validation Accuracy: 0.92
-  * Clean feature separation
+### Hardware
+- CUDA-capable GPU recommended
+- 16GB+ RAM
+- SSD recommended
+- Multi-core processor
 
-- **Stage 2 (Scene Detection)**
-  * Final Validation Loss: 3.33
-  * Box Precision (L1): 0.75
-  * Box Overlap (GIoU): 1.29
-  * Confidence: 0.9999
-
-### System Requirements
-- CPU-optimized implementation
-- ~2GB RAM for inference
-- ~4GB RAM for training
-- Python 3.8+
+### Software
+- Python 3.9+
+- PyTorch 2.0+
+- CUDA 11.x (for GPU)
+- cuDNN 8.x
 
 ## 🛠️ Project Structure
 ```
 theres-waldo/
 ├── src/waldo_finder/
-│   ├── model.py          # Two-stage architecture
-│   ├── train_stage1.py   # Feature learning
-│   ├── train_stage2.py   # Scene detection
-│   ├── inference.py      # Detection pipeline
-│   └── data.py          # Data handling
-├── config/              # Training configs
-├── annotations/        # Ground truth
-└── trained_model/     # Checkpoints
+│   ├── models/
+│   │   ├── hierarchical_vit.py
+│   │   ├── attention.py
+│   │   └── detection_head.py
+│   ├── training/
+│   │   ├── train.py
+│   │   └── trainer.py
+│   ├── data/
+│   │   ├── scene_dataset.py
+│   │   └── prepare_data.py
+│   └── inference/
+│       └── predict.py
+├── config/
+│   ├── scene_model.yaml
+│   └── model/
+│       └── vit_base.yaml
+├── data/
+│   └── scenes/
+└── outputs/
+    ├── checkpoints/
+    └── logs/
 ```
 
 ## 📝 License
@@ -183,7 +192,7 @@ MIT License - see [LICENSE](LICENSE)
 
 ## 🙏 Acknowledgments
 - Martin Handford for the "Where's Waldo?" series
-- JAX team for excellent ML tools
+- PyTorch team for excellent ML tools
 - Vision Transformer authors for inspiration
 
 ## 📧 Contact

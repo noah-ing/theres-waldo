@@ -1,0 +1,144 @@
+# Scene-level Waldo detection model configuration
+
+model:
+  # Vision Transformer settings
+  img_size: 384
+  patch_size: 32
+  num_layers: 12
+  num_heads: 8  # Reduced from 16
+  hidden_dim: 512  # Reduced from 768
+  mlp_dim: 2048  # Reduced from 3072
+  dropout: 0.1
+  attention_dropout: 0.1
+  num_levels: 3
+  pool_ratios: [2, 2, 2]
+
+detection:
+  # Detection head settings
+  hidden_dim: 256
+  min_size: 0.02  # Minimum relative box size
+  max_size: 0.1   # Maximum relative box size
+  conf_threshold: 0.95  # Confidence threshold for predictions
+  nms_threshold: 0.3    # NMS IoU threshold
+
+loss:
+  # Loss weights and settings
+  box_weight: 1.0
+  scale_weight: 1.0
+  context_weight: 1.0
+  conf_weight: 1.0
+  contrastive_margin: 0.5  # Margin for triplet loss
+
+optimizer:
+  # Training optimization settings
+  learning_rate: 1e-4
+  weight_decay: 0.05
+  max_epochs: 40  # Reduced from 200
+  min_lr: 1e-6
+  warmup_epochs: 5  # Reduced from 10
+  gradient_clip: 1.0
+
+data:
+  # Dataset and dataloader settings
+  data_dir: "c:/Users/Noah/dev/theres-waldo/data/scenes"
+  batch_size: 32
+  num_workers: 4
+  max_triplets_per_scene: 10
+
+curriculum:
+  # Curriculum learning settings
+  advance_threshold: 0.1  # Loss threshold to advance curriculum
+  levels:
+    easy:
+      max_distractors: 10
+      min_waldo_size: 0.05
+      scene_complexity: 0.3
+    medium:
+      max_distractors: 20
+      min_waldo_size: 0.03
+      scene_complexity: 0.6
+    hard:
+      max_distractors: 30
+      min_waldo_size: 0.02
+      scene_complexity: 1.0
+
+training:
+  # General training settings
+  pretrain:
+    enabled: true
+    epochs: 10  # Reduced from 50
+    mask_ratio: 0.75
+    temperature: 0.07
+  
+  contrastive:
+    enabled: true
+    epochs: 10  # Reduced from 50
+    mining:
+      type: "hard"
+      k: 5000
+  
+  detection:
+    enabled: true
+    epochs: 20  # Reduced from 100
+
+distributed:
+  # Distributed training settings
+  backend: "nccl"
+  sync_bn: true
+  find_unused_parameters: false
+
+logging:
+  # Experiment tracking settings
+  project: "waldo-finder"
+  name: "scene-level-v1"
+  save_dir: "outputs"
+  log_every_n_steps: 50
+
+checkpoint:
+  # Model checkpointing settings
+  dirpath: "checkpoints"
+  filename: "waldo-{epoch:02d}-{val_loss:.2f}"
+  save_top_k: 3
+  monitor: "val_loss"
+  mode: "min"
+  save_last: true
+
+hardware:
+  # Hardware utilization settings
+  precision: 16  # Changed to mixed precision for speed
+  accelerator: "auto"
+  devices: 1
+  strategy: "auto"
+
+augmentation:
+  # Data augmentation settings
+  train:
+    horizontal_flip: true
+    vertical_flip: false
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    random_affine:
+      degrees: 10
+      translate: [0.1, 0.1]
+      scale: [0.9, 1.1]
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+  
+  val:
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+inference:
+  # Inference settings
+  batch_size: 1
+  visualize: true
+  save_outputs: true
+  output_dir: "predictions"
+  confidence_threshold: 0.95
+  nms_threshold: 0.3
+  max_detections: 100

@@ -1,9 +1,14 @@
-# Scale-aware Vision Transformer configuration (CPU-optimized)
+# Core model parameters
+img_size: 384  # Base image size
+patch_size: 32  # Patch size for ViT
 num_heads: 8  # Proven optimal for our task
 num_layers: 8  # Balance between capacity and speed
 hidden_dim: 512  # Sufficient for feature extraction
 mlp_dim: 2048  # Proven effective dimension
-dropout_rate: 0.4  # Increased for better regularization
+dropout: 0.4  # Increased for better regularization
+attention_dropout: 0.3  # Increased for better generalization
+num_levels: 4  # Number of hierarchical levels
+pool_ratios: [2, 2, 2]  # Progressive pooling ratios
 
 # Scale-aware parameters
 scale_bins: [0.05, 0.075, 0.1, 0.125, 0.15]  # Aligned with training config
