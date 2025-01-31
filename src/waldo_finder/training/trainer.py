@@ -132,8 +132,9 @@ class WaldoTrainer(pl.LightningModule):
                 negative_feat
             )
             
-        # Log metrics
-        self.log('train/pretrain_loss', loss)
+        # Log metrics with stage-specific name
+        metric_name = 'train/contrastive_loss' if not self.pretrain else 'train/pretrain_loss'
+        self.log(metric_name, loss)
         
         return loss
         
@@ -193,7 +194,9 @@ class WaldoTrainer(pl.LightningModule):
                 negative_feat
             )
             
-        self.log('val/pretrain_loss', loss)
+        # Log metrics with stage-specific name
+        metric_name = 'val/contrastive_loss' if not self.pretrain else 'val/pretrain_loss'
+        self.log(metric_name, loss)
         
         return {'val_loss': loss}
         

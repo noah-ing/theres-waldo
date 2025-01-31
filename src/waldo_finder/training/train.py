@@ -27,10 +27,13 @@ def setup_callbacks(config: DictConfig, stage: str) -> Dict:
     # Determine monitor metric based on stage
     if stage == 'pretrain':
         monitor_metric = 'train/pretrain_loss'
+        monitor_mode = 'min'
     elif stage == 'contrastive':
         monitor_metric = 'train/contrastive_loss'
+        monitor_mode = 'min'
     else:
         monitor_metric = 'val/detection_loss'
+        monitor_mode = 'min'
     
     # Checkpoint callback
     checkpoint_callback = ModelCheckpoint(
@@ -38,7 +41,7 @@ def setup_callbacks(config: DictConfig, stage: str) -> Dict:
         filename=config.checkpoint.filename,
         save_top_k=config.checkpoint.save_top_k,
         monitor=monitor_metric,
-        mode='min',
+        mode=monitor_mode,
         save_last=config.checkpoint.save_last
     )
     callbacks.append(checkpoint_callback)
@@ -50,7 +53,7 @@ def setup_callbacks(config: DictConfig, stage: str) -> Dict:
     # Early stopping
     early_stopping = EarlyStopping(
         monitor=monitor_metric,
-        mode='min',
+        mode=monitor_mode,
         patience=10,
         verbose=True
     )
