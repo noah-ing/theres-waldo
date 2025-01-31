@@ -33,7 +33,7 @@ ENV/
 # Project specific
 outputs/
 trained_model/
-models/
+/models/
 wandb/
 
 # Memory Bank (never commit to git)
