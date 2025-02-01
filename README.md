@@ -32,13 +32,20 @@ A state-of-the-art computer vision system that uses advanced deep learning to fi
   * NMS post-processing
 
 ### Training Pipeline
-- **Multi-Stage Training**
-  * Pre-training phase (30 epochs)
-  * Contrastive learning (40 epochs)
-  * Detection fine-tuning (60 epochs)
-  * Curriculum progression
+- **Multi-Stage Training** (⚠️ Currently Debugging)
+  * Pre-training phase (30 epochs, planned)
+  * Contrastive learning (40 epochs, planned)
+  * Detection fine-tuning (early stopping at 3/60 epochs)
+  * Curriculum progression (not yet validated)
 
-- **Curriculum Learning**
+- **Known Issues**
+  * Training speed: 0.18-0.21 it/s
+  * Batch count: 3 batches/epoch
+  * Loss plateauing at 0.000001
+  * Potential gradient vanishing
+  * Data loading bottlenecks
+
+- **Curriculum Learning** (Planned)
   * Easy: 10 distractors, 5% min size
   * Medium: 20 distractors, 3% min size
   * Hard: 30 distractors, 2% min size
@@ -96,11 +103,17 @@ python -m waldo_finder.training.train --config-name train
   * Confidence values
 
 ### Training Strategy
-- **Three-Phase Pipeline**
-  * Pattern learning (30 epochs)
-  * Discrimination (40 epochs)
-  * Localization (60 epochs)
-  * Curriculum advancement
+- **Three-Phase Pipeline** (⚠️ Under Development)
+  * Pattern learning (not yet started)
+  * Discrimination (not yet started)
+  * Localization (stopped at 3/60 epochs)
+  * Curriculum advancement (pending)
+
+- **Current Focus**
+  * Debugging data pipeline issues
+  * Investigating loss function behavior
+  * Optimizing batch processing
+  * Monitoring gradient flow
 
 ### Performance Optimization
 - **Hardware Utilization**
