@@ -1,17 +1,20 @@
 # Scene-level Waldo detection model configuration
 
 model:
-  # Vision Transformer settings
+  # Vision Transformer settings optimized for 4GB GPU
   img_size: 384
-  patch_size: 32
-  num_layers: 12
-  num_heads: 8  # Reduced from 16
-  hidden_dim: 512  # Reduced from 768
-  mlp_dim: 2048  # Reduced from 3072
+  patch_size: 32  # Larger patches for memory efficiency
+  num_layers: 12  # Full depth for better feature extraction
+  num_heads: 8    # Balanced for memory and attention capacity
+  hidden_dim: 512 # Memory-efficient feature representation
+  mlp_dim: 2048  # Balanced transformation capacity
   dropout: 0.1
   attention_dropout: 0.1
-  num_levels: 3
-  pool_ratios: [2, 2, 2]
+  num_levels: 3   # Three levels for multi-scale understanding
+  pool_ratios: [2, 2, 2]  # Progressive feature pooling
+  margin: 0.2  # Margin for triplet loss
+  mining_strategy: "hard"  # Use hard example mining
+  use_checkpoint: true  # Enable gradient checkpointing
 
 detection:
   # Detection head settings
@@ -27,59 +30,79 @@ loss:
   scale_weight: 1.0
   context_weight: 1.0
   conf_weight: 1.0
-  contrastive_margin: 0.5  # Margin for triplet loss
+  contrastive_margin: 0.2  # Reduced margin for easier initial learning
 
 optimizer:
-  # Training optimization settings
-  learning_rate: 1e-4
-  weight_decay: 0.05
-  max_epochs: 40  # Reduced from 200
-  min_lr: 1e-6
-  warmup_epochs: 5  # Reduced from 10
-  gradient_clip: 1.0
+  # Base optimization settings
+  weight_decay: 0.05   # Reduced for larger model
+  gradient_clip: 1.0   # Standard clipping for stability
+  amsgrad: true       # Enable AMS-Grad for better convergence
 
 data:
-  # Dataset and dataloader settings
-  data_dir: "c:/Users/Noah/dev/theres-waldo/data/scenes"
-  batch_size: 32
-  num_workers: 4
-  max_triplets_per_scene: 10
-
-curriculum:
-  # Curriculum learning settings
-  advance_threshold: 0.1  # Loss threshold to advance curriculum
-  levels:
-    easy:
-      max_distractors: 10
-      min_waldo_size: 0.05
-      scene_complexity: 0.3
-    medium:
-      max_distractors: 20
-      min_waldo_size: 0.03
-      scene_complexity: 0.6
-    hard:
-      max_distractors: 30
-      min_waldo_size: 0.02
-      scene_complexity: 1.0
+  # Dataset and dataloader settings optimized for speed and memory
+  data_dir: "c:/Users/Noah/dev/theres-waldo/data/scenes"  # Absolute path since Hydra changes working dir
+  batch_size: 8       # Increased for better throughput
+  num_workers: 4      # Increased for faster data loading
+  max_triplets_per_scene: 10  # Reduced for faster iteration
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4  # Increased prefetching
+  drop_last: true    # Drop incomplete batches for stable training
+  cache_size: 50     # Increased cache for speed
 
 training:
-  # General training settings
+  # Phase-specific training settings
   pretrain:
     enabled: true
-    epochs: 10  # Reduced from 50
+    epochs: 25  # Increased for better feature learning
+    learning_rate: 1e-4  # Higher LR for feature learning
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 10
+      min_lr: 1e-6
     mask_ratio: 0.75
-    temperature: 0.07
+    temperature: 0.1  # Increased temperature for smoother gradients
+    checkpoint_dir: "checkpoints/pretrain"
   
   contrastive:
     enabled: true
-    epochs: 10  # Reduced from 50
+    epochs: 25  # Increased for better embedding space
+    learning_rate: 5e-5  # Balanced for triplet learning
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 8
+      min_lr: 1e-6
     mining:
       type: "hard"
-      k: 5000
+      k: 2500  # Reduced for more focused mining
+    checkpoint_dir: "checkpoints/contrastive"
   
   detection:
     enabled: true
-    epochs: 20  # Reduced from 100
+    epochs: 50  # Increased for better detection learning
+    learning_rate: 2e-5  # Lower LR for fine-tuning
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 12
+      min_lr: 1e-6
+    checkpoint_dir: "checkpoints/detection"
+    curriculum:
+      start_level: "easy"
+      advance_threshold: 0.15
+      patience: 5  # Epochs before advancing
+      levels:
+        easy:
+          max_distractors: 15
+          min_waldo_size: 0.04
+          scene_complexity: 0.4
+        medium:
+          max_distractors: 20
+          min_waldo_size: 0.03
+          scene_complexity: 0.7
+        hard:
+          max_distractors: 30
+          min_waldo_size: 0.02
+          scene_complexity: 1.0
 
 distributed:
   # Distributed training settings
@@ -93,11 +116,15 @@ logging:
   name: "scene-level-v1"
   save_dir: "outputs"
   log_every_n_steps: 50
+  phase_metrics:
+    pretrain: ["pretrain_loss", "val_pretrain_loss"]
+    contrastive: ["contrastive_loss", "val_contrastive_loss"]
+    detection: ["detection_loss", "val_detection_loss", "box_loss", "cls_loss"]
 
 checkpoint:
   # Model checkpointing settings
   dirpath: "checkpoints"
-  filename: "waldo-{epoch:02d}-{val_loss:.2f}"
+  filename: "{phase}-{epoch:02d}-{val_loss:.2f}"
   save_top_k: 3
   monitor: "val_loss"
   mode: "min"
@@ -105,33 +132,31 @@ checkpoint:
 
 hardware:
   # Hardware utilization settings
-  precision: 16  # Changed to mixed precision for speed
+  precision: "16-mixed"  # Using recommended mixed precision format
   accelerator: "auto"
   devices: 1
   strategy: "auto"
+  deterministic: false  # Disable for better performance
+  benchmark: true      # Enable for faster training
+  gradient_clip_val: 1.0  # Gradient clipping for stability
+  accumulate_grad_batches: 4  # Accumulate for effective batch size of 16
+  memory_monitoring:
+    clear_interval: 15  # More frequent memory clearing
+    peak_monitor: true
 
 augmentation:
   # Data augmentation settings
-  train:
-    horizontal_flip: true
-    vertical_flip: false
-    color_jitter:
-      brightness: 0.2
-      contrast: 0.2
-      saturation: 0.2
-      hue: 0.1
-    random_affine:
-      degrees: 10
-      translate: [0.1, 0.1]
-      scale: [0.9, 1.1]
-    normalize:
-      mean: [0.485, 0.456, 0.406]
-      std: [0.229, 0.224, 0.225]
-  
-  val:
-    normalize:
-      mean: [0.485, 0.456, 0.406]
-      std: [0.229, 0.224, 0.225]
+  color_jitter:
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+  random_affine:
+    degrees: 10
+    translate: [0.1, 0.1]
+    scale: [0.9, 1.1]
+  random_horizontal_flip: 0.5
+  random_vertical_flip: 0.0
 
 inference:
   # Inference settings

@@ -1,0 +1,64 @@
+# Test configuration for verifying training pipeline
+defaults:
+  - scene_model
+  - _self_  # Add self-reference for proper composition
+
+# Override only essential settings for testing
+training:
+  pretrain:
+    enabled: true
+    epochs: 2  # Reduced for testing
+    scheduler:
+      warmup_epochs: 1  # Reduced for testing
+    
+  contrastive:
+    enabled: true
+    epochs: 2  # Reduced for testing
+    scheduler:
+      warmup_epochs: 1  # Reduced for testing
+    mining:
+      k: 25  # Reduced mining pool for testing
+    
+  detection:
+    enabled: true
+    epochs: 2  # Reduced for testing
+    scheduler:
+      warmup_epochs: 1  # Reduced for testing
+    curriculum:
+      patience: 1  # Quick advancement
+      threshold: 0.15  # Threshold for advancing curriculum
+
+data:
+  max_triplets_per_scene: 5  # Fewer triplets for testing
+  batch_size: 8  # Keep optimized batch size
+  num_workers: 4  # Keep optimized workers
+  prefetch_factor: 4  # Keep optimized prefetching
+  cache_size: 25  # Reduced cache for testing
+
+# Checkpoint configuration
+checkpoint:
+  dirpath: "outputs/checkpoints"
+  filename: "waldo-{epoch:02d}-{val_loss:.2f}"
+  save_top_k: 3
+  monitor: "val_loss"
+  mode: "min"
+  save_last: true
+
+# Logging configuration
+logging:
+  name: "test-run"
+  log_every_n_steps: 1  # More frequent logging
+  save_dir: "outputs/logs"
+  use_wandb: false
+
+# Hardware configuration
+hardware:
+  accelerator: "gpu"
+  devices: [0]
+  strategy: "auto"
+  precision: "16-mixed"  # Use mixed precision format
+  memory_monitoring:
+    clear_interval: 15  # More frequent clearing
+  gradient_clip_val: 1.0
+  benchmark: true
+  deterministic: false

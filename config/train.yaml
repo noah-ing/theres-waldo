@@ -1,135 +1,158 @@
+# Production training configuration for Waldo detection
 defaults:
+  - scene_model
   - _self_
-  - model: vit_base
-  - override hydra/hydra_logging: default
-  - override hydra/job_logging: default
 
-# Logging configuration
-logging:
-  use_wandb: false  # Disable wandb by default
-  save_dir: "outputs/logs"
-  # Wandb settings (only used if use_wandb is true)
-  project: "waldo-finder"
-  name: "pretrain-curriculum"
-  log_every_n_steps: 50
+# Training configuration optimized for stable feature learning
+training:
+  # Pre-training phase: Learn robust Waldo features
+  pretrain:
+    enabled: true
+    epochs: 30
+    batch_size: 8
+    learning_rate: 5e-5  # Reduced from 1e-4
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 15  # Increased from 10
+      min_lr: 1e-6
+    mask_ratio: 0.75
+    temperature: 0.1
+    dropout: 0.3  # Increased from 0.2
+    early_stopping:
+      patience: 5
+      min_delta: 0.01
+    
+  # Contrastive phase: Learn to distinguish Waldo
+  contrastive:
+    enabled: true
+    epochs: 40
+    batch_size: 8
+    learning_rate: 2e-5  # Reduced from 5e-5
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 12  # Increased from 8
+      min_lr: 1e-6
+    mining:
+      type: "hard"
+      k: 3000
+    margin: 0.3
+    dropout: 0.3
+    early_stopping:
+      patience: 5
+      min_delta: 0.01
+    
+  # Detection phase: Learn precise localization
+  detection:
+    enabled: true
+    epochs: 60
+    batch_size: 4
+    learning_rate: 1e-5  # Reduced from 2e-5
+    scheduler:
+      type: "cosine"
+      warmup_epochs: 15  # Increased from 12
+      min_lr: 1e-6
+    curriculum:
+      enabled: true
+      start_level: "easy"
+      patience: 3
+      threshold: 0.25
+      levels:
+        easy:
+          max_distractors: 10
+          min_waldo_size: 0.05
+          scene_complexity: 0.3
+        medium:
+          max_distractors: 20
+          min_waldo_size: 0.03
+          scene_complexity: 0.6
+        hard:
+          max_distractors: 30
+          min_waldo_size: 0.02
+          scene_complexity: 1.0
+    dropout: 0.3
+    early_stopping:
+      patience: 5
+      min_delta: 0.01
+
+# Loss configuration
+loss:
+  box_weight: 2.0
+  scale_weight: 1.0
+  context_weight: 1.5
+  conf_weight: 1.0
+  contrastive_margin: 0.3
+
+# Model configuration
+model:
+  img_size: 384
+  patch_size: 32
+  num_layers: 12
+  num_heads: 8
+  hidden_dim: 512
+  mlp_dim: 2048
+  dropout: 0.3  # Increased global dropout
+  attention_dropout: 0.2  # Increased from 0.1
+  num_levels: 3
+  pool_ratios: [2, 2, 2]
+  use_checkpoint: true
+
+# Optimization configuration
+optimizer:
+  weight_decay: 0.1  # Increased from 0.05
+  gradient_clip_val: 0.5  # Reduced from 1.0
+  amsgrad: true
+
+# Data configuration
+data:
+  batch_size: 8
+  num_workers: 4
+  prefetch_factor: 4
+  cache_size: 100
+  pin_memory: true
+  persistent_workers: true
+  drop_last: true
+  augmentation:
+    color_jitter:
+      brightness: 0.4
+      contrast: 0.4
+      saturation: 0.4
+      hue: 0.1
+    random_affine:
+      degrees: 15
+      translate: [0.1, 0.1]
+      scale: [0.8, 1.2]
+    random_horizontal_flip: 0.5
+    random_erase:  # Added random erasing
+      p: 0.3
+      scale: [0.02, 0.2]
+      ratio: [0.3, 3.3]
 
 # Hardware configuration
 hardware:
   accelerator: "gpu"
-  devices: [0]  # Use first GPU
-  strategy: "ddp"
-  precision: 16  # Mixed precision training
+  devices: [0]
+  strategy: "auto"
+  precision: "16-mixed"
+  memory_monitoring:
+    clear_interval: 15
+    peak_monitor: true
+  gradient_clip_val: 0.5
+  accumulate_grad_batches: 2
 
 # Checkpoint configuration
 checkpoint:
   dirpath: "outputs/checkpoints"
   filename: "waldo-{epoch:02d}-{val_loss:.2f}"
   save_top_k: 3
-  monitor: "val/pretrain_loss"
+  monitor: "val_loss"
   mode: "min"
   save_last: true
 
-# Waldo-focused configuration
-experiment_name: waldo-finder-scale-aware
-seed: 42  # For reproducibility
-
-# Data pipeline configuration
-data:
-  train_dir: "data/scenes"
-  val_dir: "data/scenes"
-  image_size: [640, 640]  # Maintain resolution for pattern details
-  normalize: true
-  cache_data: true
-  scale_aware: true  # Enable scale-aware processing
-
-# Training configuration optimized for precise localization
-training:
-  # Pre-training configuration
-  pretrain:
-    enabled: true
-    epochs: 50
-    batch_size: 32  # Larger batch size for pre-training
-    learning_rate: 0.0001
-    warmup_epochs: 5
-    
-  # Contrastive learning configuration
-  contrastive:
-    enabled: true
-    epochs: 50
-    batch_size: 16
-    learning_rate: 0.00005
-    warmup_epochs: 3
-    
-  # Detection training configuration
-  detection:
-    enabled: true
-    epochs: 150
-    batch_size: 4
-    learning_rate: 0.00003
-    warmup_epochs: 12
-    
-  # Common training settings
-  seed: ${seed}
-  model_dir: ${hydra:runtime.output_dir}/models
-  
-# Optimizer configuration
-optimizer:
-  learning_rate: ${training.detection.learning_rate}
-  weight_decay: 0.01
-  gradient_clip: 1.0
-  max_epochs: ${training.detection.epochs}
-  min_lr: 1e-6
-
-# Training strategy
-strategy:
-  gradient_accumulation_steps: 4
-  mixed_precision: true  # Enable for GPU
-  gradient_checkpointing: true  # Enable for memory efficiency
-  ema: true
-  ema_decay: 0.9999
-  
-  # Tightened evaluation strategy
-  eval_freq: 1
-  save_best_only: true
-  early_stopping:
-    patience: 10  # Reduced for faster training
-    min_delta: 0.001  # Slightly relaxed for faster progression
-    restore_best_weights: true
-    
-# Core features
-features:
-  sync_bn: true
-  find_unused_parameters: true
-  
-# Loss configuration
-loss:
-  # Pre-training loss
-  contrastive_margin: 1.0
-  
-  # Detection loss weights
-  box_weight: 2.0
-  scale_weight: 1.0
-  context_weight: 0.5
-  conf_weight: 0.5  # Changed from size_weight to conf_weight
-  
-# Detection configuration
-detection:
-  conf_threshold: 0.8
-  nms_threshold: 0.5
-  iou_threshold: 0.5
-  size_range: [0.03, 0.2]
-  scale_bins: [0.03, 0.08, 0.13, 0.16, 0.2]
-  hidden_dim: 256
-  min_size: 0.03
-  max_size: 0.2
-    
-# Curriculum configuration
-curriculum:
-  enabled: true
-  advance_threshold: 0.3  # Loss threshold to advance curriculum
-  size_weights: [1.5, 1.2, 1.0, 1.2, 1.5]
-  adaptive_loss: true
-  size_normalization: true
+# Logging configuration
+logging:
+  use_wandb: false
+  save_dir: "outputs/logs"
+  log_every_n_steps: 50
 
 # Hydra settings
 hydra:

@@ -17,35 +17,33 @@ A state-of-the-art computer vision system that uses advanced deep learning to fi
   * Scale-aware embeddings
   * Mixed precision training
 
-- **Context-Aware Attention (3.9M params)**
+- **Context-Aware Attention (1.1M params)**
   * Global scene attention
   * Local region focus
   * Cross-scale interactions
   * Spatial relationships
   * Window attention
 
-- **Detection System (331K params)**
-  * Location regression
-  * Scale prediction
-  * Context scoring
-  * Confidence estimation
+- **Detection System (1.8M params)**
+  * Location regression (weight: 2.0)
+  * Scale prediction (weight: 1.0)
+  * Context scoring (weight: 1.5)
+  * Confidence estimation (weight: 1.0)
   * NMS post-processing
 
 ### Training Pipeline
 - **Multi-Stage Training**
-  * Pre-training phase (10 epochs)
-  * Contrastive learning (10 epochs)
-  * Detection fine-tuning (20 epochs)
+  * Pre-training phase (30 epochs)
+  * Contrastive learning (40 epochs)
+  * Detection fine-tuning (60 epochs)
   * Curriculum progression
 
-- **Data Organization**
-  * 29 total scenes
-  * 23 training scenes
-  * 6 validation scenes
-  * Curriculum split:
-    - Easy: 2 scenes (8.7%)
-    - Medium: 14 scenes (60.9%)
-    - Hard: 7 scenes (30.4%)
+- **Curriculum Learning**
+  * Easy: 10 distractors, 5% min size
+  * Medium: 20 distractors, 3% min size
+  * Hard: 30 distractors, 2% min size
+  * Progression threshold: 0.25
+  * Patience: 3 epochs
 
 ## 🚀 Quick Start
 
@@ -73,7 +71,7 @@ pip install -e .
 python -m waldo_finder.inference --image path/to/image.jpg --model checkpoints/latest.ckpt
 
 # Train the model
-python -m waldo_finder.training.train --config-name scene_model
+python -m waldo_finder.training.train --config-name train
 ```
 
 ## 📖 Technical Architecture
@@ -98,18 +96,19 @@ python -m waldo_finder.training.train --config-name scene_model
   * Confidence values
 
 ### Training Strategy
-- **Multi-Stage Pipeline**
-  * Self-supervised pre-training
-  * Contrastive learning
-  * Detection fine-tuning
-  * Curriculum progression
+- **Three-Phase Pipeline**
+  * Pattern learning (30 epochs)
+  * Discrimination (40 epochs)
+  * Localization (60 epochs)
+  * Curriculum advancement
 
 ### Performance Optimization
 - **Hardware Utilization**
   * GPU acceleration
   * Mixed precision (16-bit)
-  * Persistent workers
-  * Memory efficiency
+  * Gradient accumulation (x2)
+  * Memory monitoring
+  * Cache size: 100
 
 ## 🔧 Configuration
 
@@ -129,19 +128,21 @@ model:
 ```yaml
 training:
   pretrain:
-    epochs: 10
-    batch_size: 32
-    learning_rate: 0.0001
+    epochs: 30
+    batch_size: 8
+    learning_rate: 2e-4
   
   contrastive:
-    epochs: 10
-    batch_size: 16
-    learning_rate: 0.00005
+    epochs: 40
+    batch_size: 8
+    learning_rate: 1e-4
+    mining:
+      k: 3000
   
   detection:
-    epochs: 20
+    epochs: 60
     batch_size: 4
-    learning_rate: 0.00003
+    learning_rate: 5e-5
 ```
 
 ## 📊 System Requirements

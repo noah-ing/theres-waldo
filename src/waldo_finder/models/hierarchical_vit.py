@@ -5,8 +5,9 @@ Implements multi-scale feature learning with progressive feature pooling.
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 class HierarchicalViT(nn.Module):
     def __init__(
@@ -21,7 +22,8 @@ class HierarchicalViT(nn.Module):
         dropout: float = 0.1,
         attention_dropout: float = 0.1,
         num_levels: int = 3,
-        pool_ratios: List[int] = [2, 2, 2]
+        pool_ratios: List[int] = [2, 2, 2],
+        use_checkpoint: bool = False
     ):
         super().__init__()
         
@@ -31,6 +33,7 @@ class HierarchicalViT(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_levels = num_levels
         self.pool_ratios = pool_ratios
+        self.use_checkpoint = use_checkpoint
         
         # Calculate number of patches
         self.num_patches = (img_size // patch_size) ** 2
@@ -93,32 +96,52 @@ class HierarchicalViT(nn.Module):
         x: torch.Tensor,
         return_features: bool = False
     ) -> Tuple[torch.Tensor, Optional[List[torch.Tensor]]]:
+        """Forward pass with optional gradient checkpointing"""
         # Initial patch embedding
-        x = self.patch_embed(x)
+        x = self.patch_embed(x)  # [B, C, H, W]
         B, C, H, W = x.shape
-        x = rearrange(x, 'b c h w -> b (h w) c')
+        x = rearrange(x, 'b c h w -> b (h w) c')  # [B, H*W, C]
         
         # Process through levels
         features = []
+        curr_h, curr_w = H, W
+        
         for level in range(self.num_levels):
             # Add position embeddings
             positions = torch.arange(x.size(1), device=x.device)
             x = x + self.pos_embeds[level](positions).unsqueeze(0)
             
-            # Apply transformer blocks
-            x = self.transformers[level](x)
-            features.append(x)
+            # Apply transformer blocks with explicit checkpoint settings
+            if self.use_checkpoint and self.training:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        return module(inputs[0])
+                    return custom_forward
+                
+                x = checkpoint.checkpoint(
+                    create_custom_forward(self.transformers[level]),
+                    x,
+                    use_reentrant=False,  # Recommended setting for better memory efficiency
+                    preserve_rng_state=True
+                )
+            else:
+                x = self.transformers[level](x)
+            
+            # Store features in spatial format
+            level_features = rearrange(x, 'b (h w) c -> b c h w', h=curr_h)
+            features.append(level_features)
             
             # Pool if not last level
             if level < self.num_levels - 1:
-                x = rearrange(x, 'b (h w) c -> b c h w', h=H//prod(self.pool_ratios[:level]))
+                x = rearrange(x, 'b (h w) c -> b c h w', h=curr_h)
                 x = self.pools[level](x)
-                H, W = H//self.pool_ratios[level], W//self.pool_ratios[level]
+                curr_h, curr_w = curr_h//self.pool_ratios[level], curr_w//self.pool_ratios[level]
                 x = rearrange(x, 'b c h w -> b (h w) c')
         
-        if return_features:
-            return x, features
-        return x, None
+        # Reshape final output to 4D format (B, C, H, W)
+        if not return_features:
+            x = rearrange(x, 'b (h w) c -> b c h w', h=curr_h)
+        return x, features if return_features else None
 
 def prod(lst):
     """Helper function to compute product of a list"""

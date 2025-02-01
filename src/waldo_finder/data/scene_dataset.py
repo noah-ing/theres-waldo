@@ -1,165 +1,385 @@
-"""
-Scene-level dataset implementation with triplet mining and curriculum learning support.
-"""
+"""Scene-level dataset implementation with improved triplet mining,
+curriculum learning, and memory efficiency optimizations."""
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
 from PIL import Image
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 import json
 import random
-from einops import rearrange, repeat
+import logging
+from functools import lru_cache
+import multiprocessing as mp
+import io
+from .transforms import ConsistentTripletTransform, WaldoTransforms
+
+logger = logging.getLogger(__name__)
+
+class SimpleCache:
+    """Simple LRU cache for dataset items"""
+    def __init__(self, capacity: int = 100):
+        self.capacity = capacity
+        self.cache = {}
+        
+    def get(self, key: str) -> Optional[Any]:
+        return self.cache.get(key)
+        
+    def set(self, key: str, value: Any):
+        if len(self.cache) >= self.capacity:
+            # Remove oldest item if full
+            if self.cache:
+                self.cache.pop(next(iter(self.cache)))
+        self.cache[key] = value
 
 class SceneDataset(Dataset):
+    """Enhanced dataset for Waldo detection with improved triplet mining"""
+    
     def __init__(
         self,
         data_dir: Union[str, Path],
+        config: Dict[str, Any],
         split: str = 'train',
-        img_size: int = 384,
-        transform: Optional[nn.Module] = None,
         curriculum_level: Optional[str] = None,
         triplet_mining: bool = False,
-        max_triplets_per_scene: int = 10
+        max_triplets_per_scene: int = 10,
+        cache_size: int = 100
     ):
         self.data_dir = Path(data_dir)
+        self.config = config
         self.split = split
-        self.img_size = img_size
         self.curriculum_level = curriculum_level
         self.triplet_mining = triplet_mining
         self.max_triplets_per_scene = max_triplets_per_scene
         
-        # Load scene annotations
-        self.annotations = self._load_annotations()
+        # Setup caches
+        self.image_cache = SimpleCache(capacity=cache_size)
+        self.triplet_cache = SimpleCache(capacity=1000)  # Cache more triplets
         
         # Setup transforms
-        if transform is not None:
-            self.transform = transform
-        else:
-            self.transform = T.Compose([
-                T.Resize((img_size, img_size)),
-                T.ToTensor(),
-                T.Normalize(mean=[0.485, 0.456, 0.406],
-                          std=[0.229, 0.224, 0.225])
-            ])
+        self.transform = ConsistentTripletTransform(
+            config,
+            is_train=(split == 'train'),
+            img_size=config['model']['img_size']
+        ) if triplet_mining else WaldoTransforms(
+            config,
+            is_train=(split == 'train'),
+            img_size=config['model']['img_size']
+        )
         
-        # Load curriculum data if specified
-        if curriculum_level is not None:
-            self.scenes = self._load_curriculum_scenes()
+        try:
+            # Load scene annotations
+            self.annotations = self._load_annotations()
+            
+            # Load scenes based on curriculum
+            if curriculum_level is not None:
+                self.scenes = self._load_curriculum_scenes()
+            else:
+                self.scenes = self._load_all_scenes()
+                
+            # Setup triplet mining if enabled
+            if triplet_mining:
+                self._initialize_triplets()
+                
+        except Exception as e:
+            logger.error(f"Error initializing dataset: {str(e)}")
+            raise
+            
+    def _initialize_triplets(self):
+        """Initialize triplets with caching"""
+        cache_key = f"{self.split}_triplets"
+        cached_triplets = self.triplet_cache.get(cache_key)
+        
+        if cached_triplets is not None:
+            self.triplets = cached_triplets
+            logger.info(f"Loaded {len(self.triplets)} cached triplets for {self.split} split")
         else:
-            self.scenes = self._load_all_scenes()
-            
-        # Setup triplet mining if enabled
-        if triplet_mining:
             self.triplets = self._mine_triplets()
+            self.triplet_cache.set(cache_key, self.triplets)
+            logger.info(f"Generated and cached {len(self.triplets)} triplets for {self.split} split")
             
-    def _load_annotations(self) -> Dict:
-        """Load scene annotations from JSON file"""
+    def _load_annotations(self) -> Dict[str, Any]:
+        """Load and validate scene annotations"""
         ann_file = self.data_dir / f'{self.split}_annotations.json'
         if not ann_file.exists():
             raise FileNotFoundError(f"Annotations file not found: {ann_file}")
             
-        with open(ann_file, 'r') as f:
-            return json.load(f)
+        try:
+            with open(ann_file, 'r') as f:
+                annotations = json.load(f)
+                
+            # Validate annotations structure
+            if not isinstance(annotations, dict) or 'scenes' not in annotations:
+                raise ValueError("Invalid annotations format")
+                
+            return annotations
             
-    def _load_curriculum_scenes(self) -> List[Dict]:
-        """Load scenes for current curriculum level"""
+        except json.JSONDecodeError:
+            raise ValueError(f"Invalid JSON in annotations file: {ann_file}")
+            
+    def _load_curriculum_scenes(self) -> List[Dict[str, Any]]:
+        """Load and validate curriculum-specific scenes"""
         curr_file = self.data_dir / 'curriculum' / f'{self.curriculum_level}.json'
         if not curr_file.exists():
             raise FileNotFoundError(f"Curriculum file not found: {curr_file}")
             
-        with open(curr_file, 'r') as f:
-            scene_ids = json.load(f)
+        try:
+            with open(curr_file, 'r') as f:
+                scene_ids = json.load(f)
+                
+            # Filter scenes based on curriculum
+            curriculum_scenes = [
+                scene for scene in self.annotations['scenes']
+                if scene['id'] in scene_ids
+            ]
             
-        return [
-            scene for scene in self.annotations['scenes']
-            if scene['id'] in scene_ids
-        ]
+            if not curriculum_scenes:
+                raise ValueError(f"No scenes found for curriculum level: {self.curriculum_level}")
+                
+            return curriculum_scenes
+            
+        except json.JSONDecodeError:
+            raise ValueError(f"Invalid JSON in curriculum file: {curr_file}")
         
-    def _load_all_scenes(self) -> List[Dict]:
-        """Load all scenes for current split"""
-        return self.annotations['scenes']
+    def _load_all_scenes(self) -> List[Dict[str, Any]]:
+        """Load and validate all scenes for current split"""
+        scenes = self.annotations['scenes']
+        if not scenes:
+            raise ValueError(f"No scenes found for split: {self.split}")
+        return scenes
         
-    def _mine_triplets(self) -> List[Dict]:
-        """Mine triplets for contrastive learning"""
+    @staticmethod
+    def _compute_scene_complexity(scene: Dict[str, Any]) -> float:
+        """Compute scene complexity score based on multiple factors"""
+        # Basic complexity from number of objects
+        num_objects = len(scene['boxes'])
+        
+        # Additional complexity factors
+        num_similar_objects = sum(1 for box in scene['boxes']
+                                if box.get('similarity_score', 0) > 0.7)
+        
+        avg_box_size = np.mean([
+            (box['x2'] - box['x1']) * (box['y2'] - box['y1'])
+            for box in scene['boxes']
+        ])
+        
+        # Combine factors into complexity score
+        complexity = (
+            0.5 * num_objects +
+            0.3 * num_similar_objects +
+            0.2 * (1 - avg_box_size)  # Smaller objects = more complex
+        )
+        
+        return complexity
+        
+    def _mine_triplets(self) -> List[Dict[str, Any]]:
+        """Enhanced triplet mining with complexity-aware sampling"""
         triplets = []
         
+        # Collect and analyze scenes
+        all_waldos = []
+        scene_complexities = {}
+        
         for scene in self.scenes:
-            # Get Waldo boxes in this scene and add scene id
-            waldo_boxes = []
+            # Compute comprehensive scene complexity
+            complexity = self._compute_scene_complexity(scene)
+            scene_complexities[scene['id']] = complexity
+            
+            # Collect Waldo instances with metadata
             for box in scene['boxes']:
                 if box['category'] == 'waldo':
-                    box_with_id = box.copy()
-                    box_with_id['id'] = scene['id']
-                    waldo_boxes.append(box_with_id)
-            
-            # Get non-Waldo boxes (hard negatives) and add scene id
-            hard_negatives = []
-            for box in scene['boxes']:
-                if box['category'] != 'waldo':
-                    box_with_id = box.copy()
-                    box_with_id['id'] = scene['id']
-                    hard_negatives.append(box_with_id)
-            
-            # For pre-training, treat each Waldo box as both anchor and positive
-            # and use other scenes' Waldo boxes as negatives
-            for i, scene_i in enumerate(self.scenes):
-                waldo_i = next((box for box in scene_i['boxes'] if box['category'] == 'waldo'), None)
-                if waldo_i is None:
-                    continue
-                    
-                # Add scene id to box
-                waldo_i = waldo_i.copy()
-                waldo_i['id'] = scene_i['id']
-                
-                # Use Waldo boxes from other scenes as negatives
-                for j, scene_j in enumerate(self.scenes):
-                    if i == j:
-                        continue
-                        
-                    waldo_j = next((box for box in scene_j['boxes'] if box['category'] == 'waldo'), None)
-                    if waldo_j is None:
-                        continue
-                        
-                    # Add scene id to negative box
-                    waldo_j = waldo_j.copy()
-                    waldo_j['id'] = scene_j['id']
-                    
-                    # Create triplet using same box as anchor and positive
-                    triplets.append({
-                        'scene_id': scene_i['id'],
-                        'anchor': waldo_i,
-                        'positive': waldo_i,  # Same box as anchor
-                        'negative': waldo_j
+                    box_with_meta = box.copy()
+                    box_with_meta.update({
+                        'id': scene['id'],
+                        'complexity': complexity,
+                        'context_score': box.get('context_score', 0.0),
+                        'similarity_score': box.get('similarity_score', 0.0)
                     })
+                    all_waldos.append(box_with_meta)
+        
+        if not all_waldos:
+            raise ValueError("No Waldo instances found in dataset")
+            
+        # Sort scenes by complexity for curriculum sampling
+        complexity_range = max(scene_complexities.values()) - min(scene_complexities.values())
+        
+        triplets = []
+        for anchor in all_waldos:
+            # Normalize complexity to 0-1 range
+            norm_complexity = (anchor['complexity'] - min(scene_complexities.values())) / complexity_range
+            
+            # Dynamic triplet generation based on complexity
+            num_triplets = max(
+                3,
+                int(self.max_triplets_per_scene * (0.5 + 0.5 * norm_complexity))
+            )
+            
+            # Find similar Waldos for positives
+            similar_waldos = [
+                w for w in all_waldos
+                if w['id'] != anchor['id'] and
+                abs(w['complexity'] - anchor['complexity']) / complexity_range < 0.2 and
+                w['similarity_score'] > 0.7
+            ]
+            
+            # Generate triplets with curriculum-aware sampling
+            for _ in range(num_triplets):
+                triplet = self._generate_curriculum_triplet(
+                    anchor, similar_waldos, all_waldos, norm_complexity
+                )
+                if triplet:
+                    triplets.append(triplet)
+                    
+                if len(triplets) >= self.max_triplets_per_scene * len(self.scenes):
+                    break
                         
-        return triplets
+        # Shuffle triplets for better training
+        random.shuffle(triplets)
+        return triplets[:self.max_triplets_per_scene * len(self.scenes)]
         
+    def _generate_curriculum_triplet(
+        self,
+        anchor: Dict[str, Any],
+        similar_waldos: List[Dict[str, Any]],
+        all_waldos: List[Dict[str, Any]],
+        norm_complexity: float
+    ) -> Optional[Dict[str, Any]]:
+        """Generate a single triplet with curriculum-aware sampling"""
+        try:
+            # Select positive example
+            if similar_waldos:
+                positive = random.choice(similar_waldos)
+            else:
+                # Create synthetic positive with controlled variations
+                positive = anchor.copy()
+                # Add curriculum-aware jitter
+                jitter = 0.05 + (0.15 * norm_complexity)
+                w = positive['x2'] - positive['x1']
+                h = positive['y2'] - positive['y1']
+                scale = 1.0 + random.uniform(-jitter, jitter)
+                positive.update({
+                    'x1': max(0.0, positive['x1'] + (1-scale)*w/2),
+                    'x2': min(1.0, positive['x2'] - (1-scale)*w/2),
+                    'y1': max(0.0, positive['y1'] + (1-scale)*h/2),
+                    'y2': min(1.0, positive['y2'] - (1-scale)*h/2)
+                })
+            
+            # Select negative based on curriculum difficulty
+            other_waldos = [w for w in all_waldos if w['id'] != anchor['id']]
+            if not other_waldos:
+                return None
+                
+            if norm_complexity < 0.3:  # Easy: very different Waldos
+                candidates = [
+                    w for w in other_waldos
+                    if abs(w['complexity'] - anchor['complexity']) > 0.3 * (max(w['complexity'] for w in all_waldos) - min(w['complexity'] for w in all_waldos))
+                ]
+            elif norm_complexity < 0.7:  # Medium: mix of similar and different
+                if random.random() < 0.7:
+                    candidates = [
+                        w for w in other_waldos
+                        if abs(w['complexity'] - anchor['complexity']) < 0.2 * (max(w['complexity'] for w in all_waldos) - min(w['complexity'] for w in all_waldos))
+                    ]
+                else:
+                    candidates = other_waldos
+            else:  # Hard: similar Waldos
+                candidates = [
+                    w for w in other_waldos
+                    if abs(w['complexity'] - anchor['complexity']) < 0.1 * (max(w['complexity'] for w in all_waldos) - min(w['complexity'] for w in all_waldos))
+                    and w['similarity_score'] > 0.8
+                ]
+            
+            negative = random.choice(candidates if candidates else other_waldos)
+            
+            return {
+                'scene_id': anchor['id'],
+                'anchor': anchor,
+                'positive': positive,
+                'negative': negative,
+                'difficulty': norm_complexity,
+                'complexity': anchor['complexity']
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error generating triplet: {str(e)}")
+            return None
+        
+    def _load_image(self, img_path: Path) -> Image.Image:
+        """Load and cache image file with shared memory and format validation"""
+        try:
+            # Convert Path to string for dict key
+            path_str = str(img_path)
+            
+            # Check cache first
+            cached_img = self.image_cache.get(path_str)
+            if cached_img is not None:
+                try:
+                    img = Image.open(io.BytesIO(cached_img))
+                    logger.debug(f"Loaded cached image {path_str} with mode {img.mode}")
+                    return img
+                except Exception as e:
+                    logger.warning(f"Failed to load cached image {path_str}: {str(e)}")
+                    # Clear corrupted cache entry
+                    self.image_cache.cache.pop(path_str, None)
+                
+            # Load image if not in cache
+            if not img_path.exists():
+                raise FileNotFoundError(f"Image not found: {img_path}")
+                
+            # Load and cache image bytes
+            try:
+                with open(img_path, 'rb') as f:
+                    img_bytes = f.read()
+            except Exception as e:
+                raise IOError(f"Failed to read image file {img_path}: {str(e)}")
+                
+            try:
+                img = Image.open(io.BytesIO(img_bytes))
+            except Exception as e:
+                raise ValueError(f"Failed to decode image {img_path}: {str(e)}")
+                
+            # Cache the image bytes
+            self.image_cache.set(path_str, img_bytes)
+            
+            # Log image format for debugging
+            logger.debug(f"Loaded new image {path_str} with mode {img.mode}")
+            
+            # Validate image format
+            if img.mode not in ['RGB', 'RGBA', 'CMYK']:
+                logger.warning(f"Unexpected image mode {img.mode} for {path_str}")
+                
+            return img
+            
+        except Exception as e:
+            logger.error(f"Error loading image {img_path}: {str(e)}")
+            raise
+            
     def __len__(self) -> int:
-        if self.triplet_mining:
-            return len(self.triplets)
-        return len(self.scenes)
+        """Get dataset length"""
+        return len(self.triplets if self.triplet_mining else self.scenes)
         
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        if self.triplet_mining:
-            return self._get_triplet_item(idx)
-        return self._get_scene_item(idx)
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """Get dataset item with error handling"""
+        try:
+            if self.triplet_mining:
+                return self._get_triplet_item(idx)
+            return self._get_scene_item(idx)
+        except Exception as e:
+            logger.error(f"Error getting item {idx}: {str(e)}")
+            raise
         
-    def _get_scene_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a full scene with annotations"""
+    def _get_scene_item(self, idx: int) -> Dict[str, Any]:
+        """Get a full scene with annotations and metadata"""
         scene = self.scenes[idx]
         
-        # Load image
+        # Load and transform image
         img_path = self.data_dir / 'images' / f"{scene['id']}.jpg"
-        image = Image.open(img_path).convert('RGB')
-        
-        # Apply transforms
+        image = self._load_image(img_path)
         image = self.transform(image)
         
-        # Prepare boxes and labels
+        # Prepare tensors without gradients initially
         boxes = torch.tensor([
             [box['x1'], box['y1'], box['x2'], box['y2']]
             for box in scene['boxes']
@@ -170,91 +390,129 @@ class SceneDataset(Dataset):
             for box in scene['boxes']
         ], dtype=torch.long)
         
-        # Prepare context scores (scene complexity indicators)
-        context_scores = torch.tensor([
-            box.get('context_score', 0.0)
+        # Compute scales from box dimensions
+        scales = torch.tensor([
+            [(box['x2'] - box['x1']), (box['y2'] - box['y1'])]
             for box in scene['boxes']
         ], dtype=torch.float32)
+        
+        # Enhanced metadata
+        metadata = {
+            'scales': scales,
+            'context_scores': torch.tensor([
+                box.get('context_score', 0.0)
+                for box in scene['boxes']
+            ], dtype=torch.float32),
+            'similarity_scores': torch.tensor([
+                box.get('similarity_score', 0.0)
+                for box in scene['boxes']
+            ], dtype=torch.float32),
+            'scene_complexity': self._compute_scene_complexity(scene),
+            'scene_id': scene['id']
+        }
         
         return {
             'image': image,
             'boxes': boxes,
             'labels': labels,
-            'context_scores': context_scores,
-            'scene_id': scene['id']
+            **metadata
         }
         
-    def _get_triplet_item(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a triplet of anchor, positive, and negative examples"""
+    def _get_triplet_item(self, idx: int) -> Dict[str, Any]:
+        """Get a triplet with enhanced metadata"""
         triplet = self.triplets[idx]
-        scene_id = triplet['scene_id']
         
         # Load scene image
-        img_path = self.data_dir / 'images' / f"{scene_id}.jpg"
-        image = Image.open(img_path).convert('RGB')
+        img_path = self.data_dir / 'images' / f"{triplet['scene_id']}.jpg"
+        image = self._load_image(img_path)
         
-        # Extract patches
-        anchor_patch = self._extract_patch(image, triplet['anchor'])
-        positive_patch = self._extract_patch(image, triplet['positive'])
-        negative_patch = self._extract_patch(image, triplet['negative'])
-        
-        # Apply transforms
-        anchor_patch = self.transform(anchor_patch)
-        positive_patch = self.transform(positive_patch)
-        negative_patch = self.transform(negative_patch)
-        
-        return {
-            'anchor': anchor_patch,
-            'positive': positive_patch,
-            'negative': negative_patch,
-            'scene_id': scene_id
+        # Extract and transform patches
+        patches = {
+            'anchor': self._extract_patch(image, triplet['anchor']),
+            'positive': self._extract_patch(image, triplet['positive']),
+            'negative': self._extract_patch(image, triplet['negative'])
         }
         
-    def _extract_patch(self, image: Image.Image, box: Dict) -> Image.Image:
-        """Extract a patch from an image given a bounding box"""
-        x1, y1, x2, y2 = (
-            box['x1'], box['y1'],
-            box['x2'], box['y2']
+        # Apply consistent transforms
+        transformed = self.transform(
+            patches['anchor'],
+            patches['positive'],
+            patches['negative']
         )
         
-        # Convert normalized coordinates to pixels
-        w, h = image.size
-        x1, x2 = int(x1 * w), int(x2 * w)
-        y1, y2 = int(y1 * h), int(y2 * h)
+        # Enhanced metadata
+        metadata = {
+            'scene_id': triplet['scene_id'],
+            'difficulty': triplet['difficulty'],
+            'complexity': triplet['complexity'],
+            'similarity_scores': {
+                'anchor': triplet['anchor'].get('similarity_score', 0.0),
+                'positive': triplet['positive'].get('similarity_score', 0.0),
+                'negative': triplet['negative'].get('similarity_score', 0.0)
+            }
+        }
         
-        # Extract patch
-        patch = image.crop((x1, y1, x2, y2))
-        return patch
+        return {
+            'anchor': transformed[0],
+            'positive': transformed[1],
+            'negative': transformed[2],
+            **metadata
+        }
+        
+    def _extract_patch(self, image: Image.Image, box: Dict[str, Any]) -> Image.Image:
+        """Extract and validate image patch"""
+        try:
+            # Convert normalized coordinates to pixels
+            w, h = image.size
+            x1 = int(box['x1'] * w)
+            y1 = int(box['y1'] * h)
+            x2 = int(box['x2'] * w)
+            y2 = int(box['y2'] * h)
+            
+            # Validate coordinates
+            if not (0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h):
+                raise ValueError(f"Invalid box coordinates: {box}")
+                
+            # Extract patch
+            patch = image.crop((x1, y1, x2, y2))
+            return patch
+            
+        except Exception as e:
+            logger.error(f"Error extracting patch: {str(e)}")
+            raise
 
 def build_dataloader(
     data_dir: Union[str, Path],
+    config: Dict[str, Any],
     split: str = 'train',
-    batch_size: int = 32,
-    img_size: int = 384,
-    transform: Optional[nn.Module] = None,
     curriculum_level: Optional[str] = None,
-    triplet_mining: bool = False,
-    max_triplets_per_scene: int = 10,
-    num_workers: int = 4,
-    shuffle: bool = True,
-    persistent_workers: bool = False
+    triplet_mining: bool = False
 ) -> DataLoader:
-    """Build a dataloader with the specified configuration"""
-    dataset = SceneDataset(
-        data_dir=data_dir,
-        split=split,
-        img_size=img_size,
-        transform=transform,
-        curriculum_level=curriculum_level,
-        triplet_mining=triplet_mining,
-        max_triplets_per_scene=max_triplets_per_scene
-    )
-    
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=persistent_workers
-    )
+    """Build an optimized dataloader with the specified configuration"""
+    try:
+        # Create dataset with optimizations
+        dataset = SceneDataset(
+            data_dir=data_dir,
+            config=config,
+            split=split,
+            curriculum_level=curriculum_level,
+            triplet_mining=triplet_mining,
+            max_triplets_per_scene=config['data']['max_triplets_per_scene'],
+            cache_size=config['data']['cache_size']
+        )
+        
+        # Configure dataloader with optimized settings
+        dataloader_config = {
+            'batch_size': config['data']['batch_size'],
+            'num_workers': config['data']['num_workers'],
+            'shuffle': (split == 'train'),
+            'pin_memory': config['data']['pin_memory'],
+            'persistent_workers': config['data']['persistent_workers'],
+            'prefetch_factor': config['data']['prefetch_factor']
+        }
+        
+        return DataLoader(dataset, **dataloader_config)
+        
+    except Exception as e:
+        logger.error(f"Error building dataloader: {str(e)}")
+        raise
