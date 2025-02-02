@@ -14,25 +14,131 @@ import logging
 from functools import lru_cache
 import multiprocessing as mp
 import io
+import pickle
+import os
 from .transforms import ConsistentTripletTransform, WaldoTransforms
 
 logger = logging.getLogger(__name__)
 
-class SimpleCache:
-    """Simple LRU cache for dataset items"""
-    def __init__(self, capacity: int = 100):
+class ImageCache:
+    """Thread-safe image cache with atomic disk operations"""
+    def __init__(self, capacity: int = 100, cache_dir: str = "data/cache"):
         self.capacity = capacity
-        self.cache = {}
+        self.cache_dir = os.path.abspath(cache_dir)
+        self.memory_cache = {}
+        
+        # Clean start for each process
+        if os.path.exists(self.cache_dir):
+            import shutil
+            shutil.rmtree(self.cache_dir)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+    def __getstate__(self):
+        """Custom state for worker processes"""
+        return {
+            'capacity': self.capacity,
+            'cache_dir': self.cache_dir,
+            'memory_cache': {}  # Fresh cache per worker
+        }
+        
+    def __setstate__(self, state):
+        """Restore state in worker"""
+        self.capacity = state['capacity']
+        self.cache_dir = state['cache_dir']
+        self.memory_cache = state['memory_cache']
+        os.makedirs(self.cache_dir, exist_ok=True)
         
     def get(self, key: str) -> Optional[Any]:
-        return self.cache.get(key)
+        """Get value from cache with robust error handling"""
+        try:
+            # Try memory cache first
+            if key in self.memory_cache:
+                return self.memory_cache[key]
+                
+            # Try disk cache with atomic read
+            cache_file = os.path.join(self.cache_dir, f"{key}.pkl")
+            temp_file = os.path.join(self.cache_dir, f"{key}.tmp")
+            
+            if os.path.exists(cache_file):
+                try:
+                    # First try reading directly
+                    with open(cache_file, 'rb') as f:
+                        value = pickle.load(f)
+                    self.memory_cache[key] = value
+                    return value
+                except (EOFError, pickle.UnpicklingError) as e:
+                    # File is corrupted, try backup
+                    if os.path.exists(temp_file):
+                        try:
+                            with open(temp_file, 'rb') as f:
+                                value = pickle.load(f)
+                            # Restore from backup
+                            import shutil
+                            shutil.copy2(temp_file, cache_file)
+                            self.memory_cache[key] = value
+                            return value
+                        except:
+                            pass
+                            
+                    # Both files corrupted or missing
+                    logger.warning(f"Cache file corrupted: {cache_file}")
+                    self._cleanup_cache_files(key)
+                    return None
+                except Exception as e:
+                    logger.error(f"Unexpected error loading cache: {str(e)}")
+                    self._cleanup_cache_files(key)
+                    return None
+                    
+            return None
+        except Exception as e:
+            logger.error(f"Cache error for key {key}: {str(e)}")
+            return None
+            
+    def _cleanup_cache_files(self, key: str):
+        """Clean up corrupted cache files"""
+        try:
+            cache_file = os.path.join(self.cache_dir, f"{key}.pkl")
+            temp_file = os.path.join(self.cache_dir, f"{key}.tmp")
+            
+            if os.path.exists(cache_file):
+                os.remove(cache_file)
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                
+            # Also clear from memory cache
+            self.memory_cache.pop(key, None)
+        except Exception as e:
+            logger.error(f"Error cleaning cache files: {str(e)}")
         
     def set(self, key: str, value: Any):
-        if len(self.cache) >= self.capacity:
-            # Remove oldest item if full
-            if self.cache:
-                self.cache.pop(next(iter(self.cache)))
-        self.cache[key] = value
+        """Set value in cache with atomic write"""
+        # Update memory cache with LRU eviction
+        if len(self.memory_cache) >= self.capacity:
+            if self.memory_cache:
+                self.memory_cache.pop(next(iter(self.memory_cache)))
+        self.memory_cache[key] = value
+        
+        # Update disk cache with atomic write
+        cache_file = os.path.join(self.cache_dir, f"{key}.pkl")
+        temp_file = os.path.join(self.cache_dir, f"{key}.tmp")
+        
+        try:
+            # Ensure parent directory exists
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            
+            # Write to temporary file first
+            with open(temp_file, 'wb') as f:
+                pickle.dump(value, f, protocol=4)  # Use stable protocol version
+                f.flush()
+                os.fsync(f.fileno())  # Ensure data is written to disk
+                
+            # Atomic rename for final write
+            import shutil
+            shutil.move(temp_file, cache_file)
+            
+        except Exception as e:
+            logger.warning(f"Failed to save cache file {cache_file}: {str(e)}")
+            self._cleanup_cache_files(key)
 
 class SceneDataset(Dataset):
     """Enhanced dataset for Waldo detection with improved triplet mining"""
@@ -54,9 +160,14 @@ class SceneDataset(Dataset):
         self.triplet_mining = triplet_mining
         self.max_triplets_per_scene = max_triplets_per_scene
         
-        # Setup caches
-        self.image_cache = SimpleCache(capacity=cache_size)
-        self.triplet_cache = SimpleCache(capacity=1000)  # Cache more triplets
+        # Setup caches with persistence using absolute paths
+        cache_root = os.path.abspath("data/cache")
+        
+        # Initialize image cache with absolute paths
+        self.image_cache = ImageCache(
+            capacity=cache_size,
+            cache_dir=os.path.join(cache_root, "images")
+        )
         
         # Setup transforms
         self.transform = ConsistentTripletTransform(
@@ -89,16 +200,9 @@ class SceneDataset(Dataset):
             
     def _initialize_triplets(self):
         """Initialize triplets with caching"""
-        cache_key = f"{self.split}_triplets"
-        cached_triplets = self.triplet_cache.get(cache_key)
-        
-        if cached_triplets is not None:
-            self.triplets = cached_triplets
-            logger.info(f"Loaded {len(self.triplets)} cached triplets for {self.split} split")
-        else:
-            self.triplets = self._mine_triplets()
-            self.triplet_cache.set(cache_key, self.triplets)
-            logger.info(f"Generated and cached {len(self.triplets)} triplets for {self.split} split")
+        # Always regenerate triplets to avoid deserialization issues
+        self.triplets = self._mine_triplets()
+        logger.info(f"Generated {len(self.triplets)} triplets for {self.split} split")
             
     def _load_annotations(self) -> Dict[str, Any]:
         """Load and validate scene annotations"""
@@ -322,7 +426,7 @@ class SceneDataset(Dataset):
                 except Exception as e:
                     logger.warning(f"Failed to load cached image {path_str}: {str(e)}")
                     # Clear corrupted cache entry
-                    self.image_cache.cache.pop(path_str, None)
+                    self.image_cache.memory_cache.pop(path_str, None)
                 
             # Load image if not in cache
             if not img_path.exists():

@@ -10,36 +10,38 @@ training:
     enabled: true
     epochs: 30
     batch_size: 8
-    learning_rate: 5e-5  # Reduced from 1e-4
+    learning_rate: 1e-4  # Increased for stronger updates
     scheduler:
       type: "cosine"
-      warmup_epochs: 15  # Increased from 10
+      warmup_epochs: 5  # Reduced to reach full LR faster
       min_lr: 1e-6
     mask_ratio: 0.75
-    temperature: 0.1
-    dropout: 0.3  # Increased from 0.2
+    temperature: 0.07  # Reduced to make contrastive learning harder
+    dropout: 0.4  # Increased for stronger regularization
     early_stopping:
-      patience: 5
-      min_delta: 0.01
+      patience: 10  # Doubled patience
+      min_delta: 0.001  # More sensitive to improvements
+      min_epochs: 15  # Force minimum training epochs
     
   # Contrastive phase: Learn to distinguish Waldo
   contrastive:
     enabled: true
     epochs: 40
     batch_size: 8
-    learning_rate: 2e-5  # Reduced from 5e-5
+    learning_rate: 5e-5  # Increased for stronger updates
     scheduler:
       type: "cosine"
-      warmup_epochs: 12  # Increased from 8
+      warmup_epochs: 5  # Reduced to reach full LR faster
       min_lr: 1e-6
     mining:
       type: "hard"
-      k: 3000
-    margin: 0.3
-    dropout: 0.3
+      k: 5000  # Increased number of hard negatives
+    margin: 0.5  # Increased margin for harder triplet loss
+    dropout: 0.4  # Increased for stronger regularization
     early_stopping:
-      patience: 5
-      min_delta: 0.01
+      patience: 10  # Doubled patience
+      min_delta: 0.001  # More sensitive to improvements
+      min_epochs: 20  # Force minimum training epochs
     
   # Detection phase: Learn precise localization
   detection:
@@ -80,7 +82,9 @@ loss:
   scale_weight: 1.0
   context_weight: 1.5
   conf_weight: 1.0
-  contrastive_margin: 0.3
+  contrastive_margin: 0.5  # Increased margin for harder triplet loss
+  min_positives: 0.7  # Added minimum positive similarity threshold
+  max_negatives: 0.3  # Added maximum negative similarity threshold
 
 # Model configuration
 model:
@@ -137,7 +141,9 @@ hardware:
     clear_interval: 15
     peak_monitor: true
   gradient_clip_val: 0.5
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 4  # Increased for better stability
+  benchmark: true
+  deterministic: false
 
 # Checkpoint configuration
 checkpoint:
@@ -147,12 +153,13 @@ checkpoint:
   monitor: "val_loss"
   mode: "min"
   save_last: true
+  every_n_epochs: 1
 
 # Logging configuration
 logging:
   use_wandb: false
   save_dir: "outputs/logs"
-  log_every_n_steps: 50
+  log_every_n_steps: 10  # Reduced to match dataset size
 
 # Hydra settings
 hydra:

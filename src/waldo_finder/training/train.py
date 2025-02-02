@@ -8,6 +8,8 @@ import sys
 import torch
 import hydra
 import logging
+import time
+from datetime import datetime
 from omegaconf import DictConfig
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import (
@@ -127,10 +129,25 @@ def setup_training_strategy(config: DictConfig, has_gpu: bool):
         )
     return "auto"  # Default to auto strategy for single GPU
 
+def validate_system_time():
+    """Validate system time is reasonable for training"""
+    current_time = time.time()
+    current_year = datetime.fromtimestamp(current_time).year
+    
+    if current_year > 2024:
+        logger.warning(f"\nWARNING: System clock shows year {current_year}")
+        logger.warning("This may indicate incorrect system time settings")
+        logger.warning("Please verify your system clock is set correctly")
+        logger.warning("Training will continue, but timestamps may be incorrect\n")
+    return current_time
+
 @hydra.main(config_path="../../../config", config_name="test_run", version_base="1.1")
 def main(config: DictConfig):
     """Main training function with enhanced error handling and monitoring"""
     try:
+        # Validate system time
+        start_time = validate_system_time()
+        
         logger.info("\n" + "="*80)
         logger.info("Starting Enhanced Waldo Detection Training")
         logger.info("="*80 + "\n")

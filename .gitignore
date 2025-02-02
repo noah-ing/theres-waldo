@@ -45,3 +45,4 @@ cline_docs/
 .DS_Store
 .env
 *.log
+*.pkl

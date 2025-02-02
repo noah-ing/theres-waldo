@@ -450,20 +450,37 @@ class WaldoTrainer(pl.LightningModule):
         batch: Dict[str, torch.Tensor],
         batch_idx: int
     ) -> Dict[str, torch.Tensor]:
-        """Validation step with phase-specific handling"""
+        """Validation step with phase-specific handling and minimum epochs enforcement"""
+        # Get phase-specific minimum epochs
+        min_epochs = self.config['training'][self.phase].get('early_stopping', {}).get('min_epochs', 0)
+        
+        # Get base validation result
         if self.phase == 'pretrain' or self.phase == 'contrastive':
-            return self._pretrain_validation_step(batch, batch_idx)
+            result = self._pretrain_validation_step(batch, batch_idx)
         elif self.phase == 'detection':
-            return self._detection_validation_step(batch, batch_idx)
+            result = self._detection_validation_step(batch, batch_idx)
         else:
             raise ValueError(f"Unknown phase: {self.phase}")
+            
+        # If we haven't reached minimum epochs, return a very high loss
+        # This ensures early stopping won't trigger before min_epochs
+        if self.current_epoch < min_epochs:
+            # Return extremely high loss value
+            high_loss = torch.tensor(1e6, device=self.device)
+            return {
+                'val_loss': high_loss,
+                f'val_{self.phase}_loss': high_loss,
+                f'val/{self.phase}_loss': high_loss
+            }
+            
+        return result
         
     def _pretrain_validation_step(
         self,
         batch: Dict[str, torch.Tensor],
         batch_idx: int
     ) -> Dict[str, torch.Tensor]:
-        """Validation step for pre-training"""
+        """Validation step for pre-training with enhanced loss computation"""
         try:
             with torch.no_grad():
                 # Get triplet embeddings using the same method as training
@@ -471,19 +488,23 @@ class WaldoTrainer(pl.LightningModule):
                 positive_feat = self._compute_embeddings(batch['positive'])
                 negative_feat = self._compute_embeddings(batch['negative'])
                 
-                # Compute per-sample losses
-                losses = self.contrastive_loss(
-                    anchor_feat,
-                    positive_feat,
-                    negative_feat
-                )
+                # Get similarity thresholds from config
+                min_pos_sim = self.config['loss'].get('min_positives', 0.7)
+                max_neg_sim = self.config['loss'].get('max_negatives', 0.3)
                 
-                # Filter out zero losses
-                valid_losses = losses[losses > 0]
-                if len(valid_losses) > 0:
-                    loss = valid_losses.mean()
-                else:
-                    loss = losses.mean()
+                # Compute cosine similarities
+                pos_sim = F.cosine_similarity(anchor_feat, positive_feat)
+                neg_sim = F.cosine_similarity(anchor_feat, negative_feat)
+                
+                # Compute per-sample losses with additional constraints
+                margin_loss = self.contrastive_loss(anchor_feat, positive_feat, negative_feat)
+                
+                # Add similarity constraints
+                pos_penalty = F.relu(min_pos_sim - pos_sim).mean()
+                neg_penalty = F.relu(neg_sim - max_neg_sim).mean()
+                
+                # Combine losses
+                loss = margin_loss.mean() + pos_penalty + neg_penalty
             
             # Log phase-specific validation metrics
             batch_size = len(anchor_feat)
@@ -642,12 +663,8 @@ class WaldoTrainer(pl.LightningModule):
     def configure_optimizers(self):
         """Setup optimizer and learning rate scheduler with enhanced settings"""
         # Get phase-specific learning rate
-        if self.phase == 'pretrain':
-            lr = self.config['training']['pretrain']['learning_rate']
-        elif self.phase == 'contrastive':
-            lr = self.config['training']['contrastive']['learning_rate']
-        else:  # detection
-            lr = self.config['training']['detection']['learning_rate']
+        phase_config = self.config['training'][self.phase]
+        lr = phase_config['learning_rate']
         
         # Create optimizer with enhanced settings
         optimizer_config = self.config['optimizer']
@@ -658,11 +675,8 @@ class WaldoTrainer(pl.LightningModule):
             amsgrad=optimizer_config.get('amsgrad', True)
         )
         
-        # Get phase-specific max epochs
-        max_epochs = self.config['training'][self.phase]['epochs']
-        
         # Get phase-specific scheduler config
-        scheduler_config = self.config['training'][self.phase]['scheduler']
+        scheduler_config = phase_config['scheduler']
         warmup_epochs = scheduler_config['warmup_epochs']
         
         # Create warmup scheduler
@@ -677,7 +691,7 @@ class WaldoTrainer(pl.LightningModule):
         if scheduler_config['type'] == 'cosine':
             main_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=max_epochs - warmup_epochs,
+                T_max=phase_config['epochs'] - warmup_epochs,
                 eta_min=scheduler_config['min_lr']
             )
         else:

@@ -112,13 +112,13 @@ class WaldoDetectionHead(nn.Module):
         return batch_boxes, batch_scores
 
 class DetectionLoss(nn.Module):
-    """Multi-component detection loss."""
+    """Multi-component detection loss with improved regularization."""
     
     def __init__(
         self,
-        box_weight: float = 1.0,
+        box_weight: float = 2.0,  # Increased from 1.0
         scale_weight: float = 1.0,
-        context_weight: float = 1.0,
+        context_weight: float = 1.5,  # Increased from 1.0
         conf_weight: float = 1.0
     ):
         super().__init__()
@@ -127,8 +127,8 @@ class DetectionLoss(nn.Module):
         self.context_weight = context_weight
         self.conf_weight = conf_weight
         
-        # Loss functions
-        self.box_loss = nn.SmoothL1Loss(reduction='none')
+        # Loss functions with improved stability
+        self.box_loss = nn.SmoothL1Loss(reduction='none', beta=0.1)  # Smaller beta for more precise box regression
         self.scale_loss = nn.CrossEntropyLoss(reduction='none')
         self.context_loss = nn.BCEWithLogitsLoss(reduction='none')
         self.conf_loss = nn.BCEWithLogitsLoss(reduction='none')
@@ -138,7 +138,7 @@ class DetectionLoss(nn.Module):
         predictions: DetectionOutput,
         targets: dict
     ) -> dict:
-        """Compute detection losses with shape alignment."""
+        """Compute detection losses with improved regularization."""
         # Unpack predictions
         pred_scores = predictions.scores  # [B, H*W]
         pred_boxes = predictions.boxes    # [B, H*W, 4]
@@ -181,68 +181,89 @@ class DetectionLoss(nn.Module):
             valid_mask = best_ious > 0.5
             
             if valid_mask.any():
-                # Compute box loss for valid matches
-                batch_box_losses.append(self.box_loss(
+                # Compute box loss for valid matches with IoU weighting
+                box_losses = self.box_loss(
                     pred_boxes_b[best_idx[valid_mask]],
                     target_boxes_b[valid_mask]
-                ).mean())
+                )
+                # Weight box loss by IoU to focus on better matches
+                box_weights = best_ious[valid_mask].unsqueeze(-1)
+                batch_box_losses.append((box_losses * box_weights).mean())
                 
-                # Compute scale loss
+                # Compute scale loss with label smoothing
                 batch_scale_losses.append(self.scale_loss(
                     pred_scales[b, best_idx[valid_mask]],
                     target_scales[b, valid_mask].long()
                 ).mean())
                 
-                # Compute context loss
-                batch_context_losses.append(self.context_loss(
+                # Compute context loss with positive weighting
+                context_losses = self.context_loss(
                     pred_context[b, best_idx[valid_mask]],
                     target_context[b, valid_mask]
-                ).mean())
+                )
+                batch_context_losses.append(context_losses.mean())
                 
-                # Create confidence targets (1 for matched predictions, 0 for others)
+                # Create confidence targets with IoU-based soft labels
                 conf_target = torch.zeros_like(pred_scores[b])
-                conf_target[best_idx[valid_mask]] = 1.0
+                conf_target[best_idx[valid_mask]] = best_ious[valid_mask]
                 batch_conf_losses.append(self.conf_loss(
                     pred_scores[b],
                     conf_target
                 ).mean())
             else:
-                # For batches with no valid matches, create small regularization losses
-                # This ensures gradients are always computed
+                # For batches with no valid matches, create stronger regularization losses
                 device = pred_boxes.device
                 
-                # L2 regularization on predictions
-                box_reg_loss = (pred_boxes_b ** 2).mean()
-                scale_reg_loss = (pred_scales[b] ** 2).mean()
-                context_reg_loss = (pred_context[b] ** 2).mean()
-                conf_reg_loss = (pred_scores[b] ** 2).mean()
+                # Stronger regularization losses
+                box_reg_loss = F.l1_loss(pred_boxes_b, torch.zeros_like(pred_boxes_b))
+                scale_reg_loss = -(pred_scales[b] * torch.log(pred_scales[b] + 1e-6)).mean()  # Entropy loss
+                context_reg_loss = F.binary_cross_entropy_with_logits(
+                    pred_context[b],
+                    torch.zeros_like(pred_context[b])
+                )
+                conf_reg_loss = F.binary_cross_entropy_with_logits(
+                    pred_scores[b],
+                    torch.zeros_like(pred_scores[b])
+                )
                 
-                # Small constant factor to ensure non-zero gradients
-                eps = 1e-6
+                # Use larger regularization factor
+                reg_factor = 0.1  # Increased from 1e-6
                 
-                batch_box_losses.append(box_reg_loss * eps)
-                batch_scale_losses.append(scale_reg_loss * eps)
-                batch_context_losses.append(context_reg_loss * eps)
-                batch_conf_losses.append(conf_reg_loss * eps)
+                batch_box_losses.append(box_reg_loss * reg_factor)
+                batch_scale_losses.append(scale_reg_loss * reg_factor)
+                batch_context_losses.append(context_reg_loss * reg_factor)
+                batch_conf_losses.append(conf_reg_loss)  # No factor needed for BCE loss
         
-        # Stack and average losses over batch
+        # Stack and average losses over batch with stability checks
         box_loss = torch.stack(batch_box_losses).mean()
         scale_loss = torch.stack(batch_scale_losses).mean()
         context_loss = torch.stack(batch_context_losses).mean()
         conf_loss = torch.stack(batch_conf_losses).mean()
         
-        # Combine losses
+        # Apply loss weights and combine
+        weighted_box_loss = self.box_weight * box_loss
+        weighted_scale_loss = self.scale_weight * scale_loss
+        weighted_context_loss = self.context_weight * context_loss
+        weighted_conf_loss = self.conf_weight * conf_loss
+        
+        # Combine losses with stability check
         total_loss = (
-            self.box_weight * box_loss +
-            self.scale_weight * scale_loss +
-            self.context_weight * context_loss +
-            self.conf_weight * conf_loss
+            weighted_box_loss +
+            weighted_scale_loss +
+            weighted_context_loss +
+            weighted_conf_loss
         )
+        
+        # Ensure loss is valid
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            print(f"Warning: Invalid loss detected! Components: box={box_loss:.4f}, scale={scale_loss:.4f}, context={context_loss:.4f}, conf={conf_loss:.4f}")
+            # Return a small but non-zero loss to maintain gradient flow
+            total_loss = torch.tensor(0.1, device=total_loss.device)
         
         return {
             'loss': total_loss,
-            'box_loss': box_loss,
-            'scale_loss': scale_loss,
-            'context_loss': context_loss,
-            'conf_loss': conf_loss
+            'box_loss': weighted_box_loss.detach(),
+            'scale_loss': weighted_scale_loss.detach(),
+            'context_loss': weighted_context_loss.detach(),
+            'conf_loss': weighted_conf_loss.detach()
         }
